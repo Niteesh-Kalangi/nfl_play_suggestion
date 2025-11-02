@@ -1,0 +1,45 @@
+# Configuration for NFL Play Suggestion Baseline Models
+
+# Data paths
+data_dir: "data"
+
+# Train/val/test splits (by week)
+splits:
+  by: "week"
+  train: [1, 2, 3, 4, 5, 6]
+  val: [7, 8]
+  test: [8]  # Will use available weeks
+
+# Feature settings
+features:
+  use_presnap_shape: false  # Set to true for Baseline 1.5
+  feature_weights:
+    yardsToGo: 1.5
+    yardline_100: 1.5
+
+# Baseline models
+baselines:
+  knn:
+    k: 50
+    metric: "euclidean"
+    algorithm: "ball_tree"
+  
+  bucket:
+    # Bucket policy uses default bucketing scheme
+    pass
+  
+  linear:
+    ridge_alpha: 1.0
+    logit_C: 1.0
+    logit_class_weight: "balanced"
+
+# Evaluation
+eval:
+  top_k: 10
+  run_cpe: true  # Counterfactual Policy Evaluation
+
+# Output
+output:
+  artifacts_dir: "artifacts"
+  save_models: true
+
