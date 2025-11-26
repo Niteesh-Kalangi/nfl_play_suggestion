@@ -1,4 +1,4 @@
-# Configuration for NFL Play Suggestion Baseline Models
+# Configuration for NFL Play Suggestion & Trajectory Generation Models
 
 # Data paths
 data_dir: "data"
@@ -7,17 +7,60 @@ data_dir: "data"
 splits:
   by: "week"
   train: [1, 2, 3, 4, 5, 6]
-  val: [7, 8]
-  test: [8]  # Will use available weeks
+  val: [7]
+  test: [8]
 
-# Feature settings
+# ============================================================================
+# TRAJECTORY GENERATION SETTINGS (for autoregressive & diffusion models)
+# ============================================================================
+
+trajectories:
+  use_tracking: true
+  fps: 10                    # Tracking data frame rate
+  max_timesteps: 50          # Truncate or pad sequences to this length
+  players: "offense_only"    # 'offense_only', 'defense_only', 'all', 'ball_carrier'
+  num_players: 11            # Number of players to track per play
+  include_velocity: true     # Include speed/acceleration features
+  condition_on_state: true   # Condition on game state (down, distance, etc.)
+
+# Autoregressive model hyperparameters
+autoregressive:
+  # Training settings
+  batch_size: 32
+  learning_rate: 0.001
+  weight_decay: 0.0001
+  epochs: 50
+  early_stopping_patience: 10
+  scheduler: "cosine"        # 'cosine', 'step', 'none'
+  
+  # LSTM configuration
+  lstm:
+    hidden_dim: 256
+    num_layers: 2
+    dropout: 0.1
+    bidirectional: false
+  
+  # Transformer configuration
+  transformer:
+    d_model: 256
+    nhead: 8
+    num_layers: 4
+    dim_feedforward: 512
+    dropout: 0.1
+    max_len: 100
+
+# ============================================================================
+# AUXILIARY PLAY SUGGESTION MODELS (non-generative baselines)
+# ============================================================================
+
+# Feature settings for play suggestion
 features:
-  use_presnap_shape: false  # Set to true for Baseline 1.5
+  use_presnap_shape: false   # Set to true for Baseline 1.5
   feature_weights:
     yardsToGo: 1.5
     yardline_100: 1.5
 
-# Baseline models
+# Auxiliary baseline models (for play-level decisions, not trajectory generation)
 baselines:
   knn:
     k: 50
@@ -33,13 +76,29 @@ baselines:
     logit_C: 1.0
     logit_class_weight: "balanced"
 
-# Evaluation
-eval:
-  top_k: 10
-  run_cpe: true  # Counterfactual Policy Evaluation
+# ============================================================================
+# EVALUATION SETTINGS
+# ============================================================================
 
-# Output
+eval:
+  # Trajectory metrics
+  trajectory:
+    compute_ade: true        # Average Displacement Error
+    compute_fde: true        # Final Displacement Error
+    compute_collision: true  # Collision rate
+    compute_speed_dist: true # Speed distribution matching
+  
+  # Play suggestion metrics (legacy)
+  play_suggestion:
+    top_k: 10
+    run_cpe: true            # Counterfactual Policy Evaluation
+
+# ============================================================================
+# OUTPUT SETTINGS
+# ============================================================================
+
 output:
   artifacts_dir: "artifacts"
+  autoregressive_dir: "artifacts/autoregressive"
   save_models: true
-
+  log_interval: 100          # Log every N batches
