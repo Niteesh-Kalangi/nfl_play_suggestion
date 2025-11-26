@@ -156,6 +156,62 @@ Edit `config.yaml` to adjust:
 - Model hyperparameters
 - Evaluation options
 
+## Trajectory Generation Baselines
+
+In addition to play suggestion, this project includes autoregressive baseline models for **multi-player trajectory synthesis**. These serve as comparison points for diffusion-based generative models.
+
+### Training Trajectory Models
+
+```bash
+python train_trajectory_baselines.py --model both --epochs 50
+```
+
+Options:
+- `--model`: `lstm`, `transformer`, or `both`
+- `--epochs`: Number of training epochs (default: 50)
+- `--batch_size`: Batch size (default: 32)
+- `--lr`: Learning rate (default: 1e-3)
+
+### LSTM Autoregressive Generator
+
+Generates trajectories step-by-step using an LSTM:
+- **Input**: Previous frame positions (all 11 offensive players) + context embedding
+- **Architecture**: 2-layer LSTM with hidden size 256
+- **Output**: Predicted (x, y) positions for all players at next frame
+- **Training**: MSE loss with teacher forcing
+
+### Transformer Autoregressive Generator
+
+Uses a Transformer decoder with causal masking:
+- **Input**: Token embeddings representing each time step (all players' features)
+- **Architecture**: 4-layer decoder, 8 attention heads, d_model=256
+- **Conditioning**: Context embeddings added to each token
+- **Training**: MSE loss with teacher forcing
+
+### Trajectory Evaluation Metrics
+
+- **ADE** (Average Displacement Error): Mean L2 distance across all frames/players
+- **FDE** (Final Displacement Error): L2 distance at final frame
+- **Physical Validity**:
+  - Speed violation rate (>12 yards/s)
+  - Acceleration violation rate
+  - Out-of-bounds rate
+- **Formation Coherence**: Spread change, centroid displacement
+- **Collision Rate**: Unrealistically close player positions
+
+### Project Structure (Trajectory)
+
+```
+src/
+├── trajectory_data.py       # Trajectory extraction and datasets
+├── trajectory_eval.py       # ADE, FDE, physical validity metrics
+└── models/
+    ├── __init__.py
+    ├── lstm_generator.py    # LSTM autoregressive model
+    └── transformer_generator.py  # Transformer autoregressive model
+train_trajectory_baselines.py  # Training script
+```
+
 ## Next Steps
 
 - Add Baseline 1.5 (State + Pre-snap Shape kNN)
@@ -163,6 +219,7 @@ Edit `config.yaml` to adjust:
 - Add EPA (Expected Points Added) as reward
 - Visualize suggested plays using tracking data
 - Build Streamlit demo interface
+- Compare trajectory baselines against diffusion model
 
 ## License
 
