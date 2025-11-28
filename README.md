@@ -43,21 +43,21 @@ Place the NFL Big Data Bowl 2023 data files in the `data/` directory. See `data/
 
 ```bash
 # Train both LSTM and Transformer
-python train_autoregressive.py --model all
+python autoreg/train_autoregressive.py --model all
 
 # Or train individually
-python train_autoregressive.py --model lstm
-python train_autoregressive.py --model transformer
+python autoreg/train_autoregressive.py --model lstm
+python autoreg/train_autoregressive.py --model transformer
 ```
 
 ### 4. Evaluate Trajectory Models
 
 ```bash
 # Evaluate all models on test set
-python eval_trajectories.py --models all --split test
+python autoreg/eval_trajectories.py --models all --split test
 
 # Evaluate specific model
-python eval_trajectories.py --models lstm transformer --split test
+python autoreg/eval_trajectories.py --models lstm transformer --split test
 ```
 
 ## Project Structure
@@ -69,12 +69,15 @@ nfl_play_suggestion/
 │   ├── games.csv
 │   ├── players.csv
 │   └── week*.csv            # Tracking data
-├── src/
-│   ├── trajectory_data.py   # Trajectory dataset building
-│   ├── models/              # Trajectory generation models
+├── autoreg/                 # Autoregressive trajectory models
+│   ├── models/
 │   │   ├── base_autoregressive.py     # Abstract base class
 │   │   ├── autoregressive_lstm.py     # LSTM generator
 │   │   └── autoregressive_transformer.py  # Transformer generator
+│   ├── train_autoregressive.py  # Train LSTM/Transformer baselines
+│   └── eval_trajectories.py     # Evaluate trajectory models
+├── src/
+│   ├── trajectory_data.py   # Trajectory dataset building
 │   ├── data_io.py           # Data loading
 │   ├── preprocess.py        # Standardization and joining
 │   ├── rewards.py           # Label computation
@@ -86,8 +89,6 @@ nfl_play_suggestion/
 │   │   └── linear_heads.py
 │   ├── eval.py              # Evaluation metrics (ADE, FDE, etc.)
 │   └── api.py               # Inference APIs
-├── train_autoregressive.py  # Train LSTM/Transformer baselines
-├── eval_trajectories.py     # Evaluate trajectory models
 ├── train_baselines.py       # Train auxiliary play suggestion models
 ├── config.yaml              # Configuration
 └── artifacts/
@@ -159,7 +160,7 @@ For trajectory generation, we use:
 ### Running Evaluation
 
 ```bash
-python eval_trajectories.py --models lstm transformer --split test
+python autoreg/eval_trajectories.py --models lstm transformer --split test
 ```
 
 Output:

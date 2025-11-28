@@ -1,13 +1,7 @@
 """
 Trajectory generation models.
+
+Note: Autoregressive models have been moved to autoreg/models/
 """
-from .base_autoregressive import BaseAutoregressiveModel
-from .autoregressive_lstm import LSTMTrajectoryGenerator
-from .autoregressive_transformer import TransformerTrajectoryGenerator
-
-__all__ = [
-    'BaseAutoregressiveModel',
-    'LSTMTrajectoryGenerator',
-    'TransformerTrajectoryGenerator',
-]
-
+# Autoregressive models are now in autoreg/models/
+# This file is kept for backwards compatibility if needed

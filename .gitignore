@@ -21,19 +21,31 @@ wheels/
 *.egg
 
 # Data files (too large for git)
+# Raw data from Kaggle and other sources
 data/*.csv
 data/*.parquet
+data/nfl-big-data-bowl-2023/
+# Processed/cached data
+data/cache/
+*.pkl
+*.joblib
 
 # Trained models and artifacts
 artifacts/
-*.pkl
-*.joblib
 *.h5
 *.ckpt
+*.pt
+*.pth
+*.safetensors
 
 # Jupyter Notebook
 .ipynb_checkpoints
-*.ipynb
+# Allow notebooks but ignore large outputs - uncomment if you want to track notebooks
+# *.ipynb
+
+# Generated reports and outputs
+reports/metrics/
+reports/videos/
 
 # IDE
 .vscode/
@@ -58,8 +70,16 @@ Thumbs.db
 
 # Logs
 *.log
+*.out
 
 # Temporary files
 *.tmp
 *.temp
+
+# Kaggle API credentials (if downloaded)
+kaggle.json
+
+# Weights & Biases / other experiment tracking
+wandb/
+mlruns/
 
