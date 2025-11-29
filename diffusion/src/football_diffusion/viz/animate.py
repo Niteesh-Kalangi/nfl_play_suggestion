@@ -85,7 +85,7 @@ def animate_trajectory(
     if show_field:
         draw_field(ax)
     else:
-        ax.set_xlim(0, 120)
+        ax.set_xlim(0, 100)  # 100-yard field (middle at 50)
         ax.set_ylim(0, 53.3)
         ax.set_aspect('equal')
         ax.grid(True, alpha=0.3)

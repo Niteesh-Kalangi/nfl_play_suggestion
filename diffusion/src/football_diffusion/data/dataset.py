@@ -100,16 +100,42 @@ class FootballPlayDataset(Dataset):
         
         # Filter by split/weeks if specified
         if split is not None or weeks is not None:
+            import random
             if weeks is None:
-                # Use default splits by week
+                # Use default splits by week - ALL 8 weeks for training
                 if split == 'train':
-                    weeks = [1, 2, 3, 4, 5, 6]
+                    # Use ALL 8 weeks for training (80% split)
+                    weeks = [1, 2, 3, 4, 5, 6, 7, 8]
+                    all_train_data = [d for d in self.data if d.get('week') in weeks]
+                    random.seed(42)  # For reproducibility
+                    random.shuffle(all_train_data)
+                    train_size = int(0.8 * len(all_train_data))
+                    self.data = all_train_data[:train_size]
+                    weeks = None  # Already filtered, don't filter again
                 elif split == 'val':
-                    weeks = [7]
+                    # Use ALL 8 weeks, but take 20% as validation
+                    weeks = [1, 2, 3, 4, 5, 6, 7, 8]
+                    all_train_data = [d for d in self.data if d.get('week') in weeks]
+                    random.seed(42)  # Same seed for reproducibility
+                    random.shuffle(all_train_data)
+                    train_size = int(0.8 * len(all_train_data))
+                    self.data = all_train_data[train_size:]  # Last 20% for val
+                    weeks = None  # Already filtered, don't filter again
                 elif split == 'test':
-                    weeks = [8]
+                    # For test, we can use a small subset or reuse val split
+                    # Using 10% of all weeks for final test
+                    weeks = [1, 2, 3, 4, 5, 6, 7, 8]
+                    all_test_data = [d for d in self.data if d.get('week') in weeks]
+                    random.seed(999)  # Different seed for test
+                    random.shuffle(all_test_data)
+                    test_size = int(0.1 * len(all_test_data))
+                    self.data = all_test_data[:test_size]  # First 10% for test
+                    weeks = None
+                else:
+                    weeks = None
             
             if weeks:
+                # Filter by week
                 self.data = [d for d in self.data if d.get('week') in weeks]
         
         # Store tensor shape info

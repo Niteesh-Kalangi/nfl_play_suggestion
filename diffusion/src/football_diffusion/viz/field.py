@@ -20,7 +20,7 @@ def draw_field(ax, field_length: float = 100, field_width: float = 53.3):
     Args:
         ax: Matplotlib axes
         field_length: Length of playable field in yards (0-100, middle at 50)
-        field_width: Width of field in yards
+        field_width: Width of field in yards (53.3)
     """
     # Field outline - darker green background (playable field: 0-100)
     rect = patches.Rectangle(
@@ -55,7 +55,7 @@ def draw_field(ax, field_length: float = 100, field_width: float = 53.3):
         ax.plot([yard, yard], [field_width * 0.43, field_width * 0.57],
                'w-', linewidth=0.3, alpha=0.5)
     
-    # 50-yard line marker (midfield) - highlighted
+    # 50-yard line marker (midfield) - highlighted at 50 (middle of 100-yard field)
     ax.axvline(x=50, color='white', linewidth=3, alpha=0.9)
     ax.text(50, field_width + 3, '50', 
            ha='center', va='bottom', fontsize=12, 
@@ -63,7 +63,7 @@ def draw_field(ax, field_length: float = 100, field_width: float = 53.3):
     
     # Goal lines (0 and 100)
     ax.axvline(x=0, color='yellow', linewidth=2.5, alpha=0.9, linestyle='-')
-    ax.axvline(x=100, color='yellow', linewidth=2.5, alpha=0.9, linestyle='-')
+    ax.axvline(x=field_length, color='yellow', linewidth=2.5, alpha=0.9, linestyle='-')
     
     ax.set_xlim(-5, field_length + 5)
     ax.set_ylim(-5, field_width + 5)

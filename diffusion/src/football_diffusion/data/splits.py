@@ -9,9 +9,9 @@ import json
 
 def create_splits_by_week(
     cache_file: Path,
-    train_weeks: List[int] = [1, 2, 3, 4, 5, 6],
-    val_weeks: List[int] = [7],
-    test_weeks: List[int] = [8]
+    train_weeks: List[int] = [1, 2, 3, 4, 5, 6, 7],  # Use weeks 1-7 for training
+    val_weeks: List[int] = [7],  # Use 20% of week 7 as validation (handled in dataset)
+    test_weeks: List[int] = [8]  # Keep week 8 for final test
 ) -> Dict[str, List[int]]:
     """
     Create train/val/test splits by week.

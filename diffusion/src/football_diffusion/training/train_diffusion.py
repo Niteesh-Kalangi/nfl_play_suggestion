@@ -55,7 +55,7 @@ class DiffusionLightningModule(pl.LightningModule):
         # Loss weights
         self.noise_loss_weight = 1.0
         self.velocity_loss_weight = 0.1
-        self.boundary_loss_weight = 0.05
+        self.boundary_loss_weight = 0.0  # Disabled: data is normalized, boundary loss not applicable
     
     def forward(
         self,
@@ -73,7 +73,8 @@ class DiffusionLightningModule(pl.LightningModule):
         self,
         predicted_noise: torch.Tensor,
         target_noise: torch.Tensor,
-        x: torch.Tensor
+        x: torch.Tensor,
+        mask: Optional[torch.Tensor] = None
     ) -> Dict[str, torch.Tensor]:
         """
         Compute combined loss: noise MSE + velocity smoothness + boundary penalty.
@@ -82,12 +83,27 @@ class DiffusionLightningModule(pl.LightningModule):
             predicted_noise: [B, T, P, F] - predicted noise
             target_noise: [B, T, P, F] - target noise
             x: [B, T, P, F] - original trajectories (for velocity computation)
+            mask: Optional [B, T] mask (1 for valid, 0 for padded)
             
         Returns:
             Dict with loss components
         """
-        # Noise MSE loss
-        noise_loss = F.mse_loss(predicted_noise, target_noise)
+        # Noise MSE loss (with optional masking)
+        if mask is not None:
+            # Expand mask: [B, T] -> [B, T, 1, 1] for broadcasting
+            mask_expanded = mask.unsqueeze(-1).unsqueeze(-1)  # [B, T, 1, 1]
+            # Mask out padded elements (multiply by mask, then normalize by valid elements)
+            masked_pred = predicted_noise * mask_expanded
+            masked_target = target_noise * mask_expanded
+            squared_error = (masked_pred - masked_target) ** 2
+            valid_elements = mask_expanded.sum()
+            if valid_elements > 0:
+                noise_loss = squared_error.sum() / valid_elements
+            else:
+                noise_loss = torch.tensor(0.0, device=predicted_noise.device)
+        else:
+            # No mask - compute standard MSE (backward compatible)
+            noise_loss = F.mse_loss(predicted_noise, target_noise)
         
         # Velocity smoothness loss (penalize large accelerations)
         # Compute velocity from positions (x, y)
@@ -99,19 +115,15 @@ class DiffusionLightningModule(pl.LightningModule):
             velocity_loss = torch.tensor(0.0, device=x.device)
         
         # Boundary penalty (penalize positions outside field bounds)
-        field_bounds = self.config.get('eval', {}).get('field_bounds', [0, 120, 0, 53.3])
-        x_min, x_max, y_min, y_max = field_bounds
+        # NOTE: If training on normalized data, boundary loss doesn't apply to normalized coordinates
+        # Disable boundary loss during training (will be checked after denormalization during eval)
+        # For normalized data, coordinates are roughly in [-3, 3] range, so raw bounds [0, 120] don't apply
+        boundary_loss = torch.tensor(0.0, device=x.device)
         
-        if x.shape[-1] >= 2:
-            x_pos = x[:, :, :, 0]
-            y_pos = x[:, :, :, 1]
-            
-            # Penalize positions outside bounds
-            x_violation = torch.clamp(x_min - x_pos, 0) + torch.clamp(x_pos - x_max, 0)
-            y_violation = torch.clamp(y_min - y_pos, 0) + torch.clamp(y_pos - y_max, 0)
-            boundary_loss = torch.mean(x_violation ** 2 + y_violation ** 2)
-        else:
-            boundary_loss = torch.tensor(0.0, device=x.device)
+        # Future: If we want boundary loss on normalized data, we'd need to:
+        # 1. Get normalization stats from metadata
+        # 2. Normalize the field bounds: (bounds - mean) / std
+        # 3. Apply penalty to normalized coordinates
         
         # Combined loss
         total_loss = (
@@ -132,14 +144,15 @@ class DiffusionLightningModule(pl.LightningModule):
         x = batch['X']  # [B, T, P, F]
         context_cat = batch['context_categorical']
         context_cont = batch['context_continuous']
+        mask = batch.get('mask', None)  # [B, T] - optional mask for padding
         
         # Forward pass
         predicted_noise, target_noise = self.model(
             x, context_cat, context_cont
         )
         
-        # Compute loss
-        losses = self.compute_loss(predicted_noise, target_noise, x)
+        # Compute loss (with optional mask)
+        losses = self.compute_loss(predicted_noise, target_noise, x, mask)
         
         # Log metrics
         self.log('train/loss', losses['loss'], on_step=True, on_epoch=True, prog_bar=True)
@@ -154,14 +167,15 @@ class DiffusionLightningModule(pl.LightningModule):
         x = batch['X']
         context_cat = batch['context_categorical']
         context_cont = batch['context_continuous']
+        mask = batch.get('mask', None)  # [B, T] - optional mask for padding
         
         # Forward pass
         predicted_noise, target_noise = self.model(
             x, context_cat, context_cont, drop_context=False
         )
         
-        # Compute loss
-        losses = self.compute_loss(predicted_noise, target_noise, x)
+        # Compute loss (with optional mask)
+        losses = self.compute_loss(predicted_noise, target_noise, x, mask)
         
         # Log metrics
         self.log('val/loss', losses['loss'], on_step=False, on_epoch=True, prog_bar=True)
