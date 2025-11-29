@@ -122,10 +122,35 @@ class FootballPlayDataset(Dataset):
     def __len__(self) -> int:
         return len(self.data)
     
+    def denormalize_tensor(self, tensor: np.ndarray) -> np.ndarray:
+        """
+        Denormalize tensor from normalized space (mean=0, std=1) back to original coordinates.
+        
+        Args:
+            tensor: Normalized tensor [T, P, F]
+            
+        Returns:
+            Denormalized tensor [T, P, F] in original coordinate space
+        """
+        if 'normalization' not in self.metadata:
+            # No normalization was applied - return as is
+            return tensor
+        
+        norm_stats = self.metadata['normalization']
+        means = np.array(norm_stats['means'])
+        stds = np.array(norm_stats['stds'])
+        
+        # Denormalize: x = x_norm * std + mean
+        denormalized = tensor.copy()
+        for f_idx in range(tensor.shape[-1]):
+            denormalized[:, :, f_idx] = tensor[:, :, f_idx] * stds[f_idx] + means[f_idx]
+        
+        return denormalized
+    
     def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
         play = self.data[idx]
         
-        # Get tensor directly
+        # Get tensor directly (already normalized during preprocessing)
         tensor = play['tensor']
         
         # Get context
@@ -141,6 +166,7 @@ class FootballPlayDataset(Dataset):
             'context_categorical': context_cat,
             'context_continuous': torch.FloatTensor(context_cont),  # [2]
             'mask': mask,
+            'player_positions': play.get('player_positions', None),  # List of position labels [P]
             'gameId': int(play['gameId']),
             'playId': int(play['playId']),
             'week': int(play.get('week', 0))

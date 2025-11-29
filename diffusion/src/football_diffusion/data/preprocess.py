@@ -164,23 +164,98 @@ def extract_play_frames(
     return play_tracking
 
 
+def normalize_position(pos_str: str, side: str = 'offense') -> str:
+    """
+    Normalize position string to standard abbreviations.
+    
+    Args:
+        pos_str: Raw position string (e.g., 'HB', 'FS', 'WR')
+        side: 'offense' or 'defense'
+        
+    Returns:
+        Normalized position string
+    """
+    if pd.isna(pos_str):
+        return 'UNKNOWN'
+    
+    pos = str(pos_str).strip().upper()
+    
+    if side == 'offense':
+        # Offensive positions
+        if pos in ['QB']:
+            return 'QB'
+        elif pos in ['RB', 'HB', 'FB']:
+            return 'RB'
+        elif pos in ['WR']:
+            return 'WR'
+        elif pos in ['TE']:
+            return 'TE'
+        elif pos in ['C', 'G', 'T', 'OL', 'LG', 'RG', 'LT', 'RT']:
+            return 'OL'
+        else:
+            return 'UNKNOWN'
+    else:
+        # Defensive positions
+        if pos in ['CB', 'S', 'FS', 'SS', 'DB']:
+            return 'DB'
+        elif pos in ['DT', 'DE', 'NT', 'DL']:
+            return 'DL'
+        elif pos in ['OLB', 'ILB', 'MLB', 'LB']:
+            return 'LB'
+        else:
+            return 'UNKNOWN'
+
+
+def get_position_priority(pos: str, side: str = 'offense') -> int:
+    """
+    Get sorting priority for positions (lower = earlier in ordering).
+    
+    Offense: QB (0), RB (1), WR (2), TE (3), OL (4)
+    Defense: DL (0), LB (1), DB (2)
+    """
+    if side == 'offense':
+        priorities = {
+            'QB': 0,
+            'RB': 1,
+            'WR': 2,
+            'TE': 3,
+            'OL': 4,
+            'UNKNOWN': 99
+        }
+    else:
+        priorities = {
+            'DL': 0,
+            'LB': 1,
+            'DB': 2,
+            'UNKNOWN': 99
+        }
+    
+    return priorities.get(pos, 99)
+
+
 def extract_player_tensor(
     play_tracking: pd.DataFrame,
     play_info: pd.Series,
     num_players: int = 22,
-    features: List[str] = ['x', 'y', 's']
-) -> np.ndarray:
+    features: List[str] = ['x', 'y', 's'],
+    players_df: Optional[pd.DataFrame] = None
+) -> tuple:
     """
-    Extract player positions as tensor [T, P, F].
+    Extract player positions as tensor [T, P, F] with FIXED ORDERING by position.
+    
+    Fixed ordering ensures consistent player positions:
+    - Offense (indices 0-10): QB, then RB(s), WR(s), TE(s), OL(s)
+    - Defense (indices 11-21): DL, LB, DB
     
     Args:
         play_tracking: Tracking DataFrame for one play (standardized, filtered frames)
         play_info: Play metadata Series
         num_players: Number of players (22 = 11 offense + 11 defense)
         features: Features to extract [x, y, s]
+        players_df: Required DataFrame with player info (nflId, officialPosition)
         
     Returns:
-        Tensor of shape [T, P, F] where T=num_frames, P=num_players, F=len(features)
+        Tuple of (tensor [T, P, F], player_positions [P] list of position strings)
     """
     frames = sorted(play_tracking['frameId'].unique())
     T = len(frames)
@@ -203,20 +278,58 @@ def extract_player_tensor(
         (play_tracking['team'] != 'football')
     )
     
-    # Get player IDs: first 11 offense, then 11 defense
-    offense_players = play_tracking[
-        play_tracking['is_offense']
-    ]['nflId'].dropna().unique()[:11]
-    defense_players = play_tracking[
-        play_tracking['is_defense']
-    ]['nflId'].dropna().unique()[:11]
+    # Get player IDs and their positions
+    offense_data = play_tracking[play_tracking['is_offense']].copy()
+    defense_data = play_tracking[play_tracking['is_defense']].copy()
     
-    all_players = list(offense_players) + list(defense_players)
+    # Build player-position mapping
+    def get_player_with_position(player_data, side):
+        """Get list of (player_id, position, x_avg) tuples sorted by position priority."""
+        players_list = []
+        
+        for player_id in player_data['nflId'].dropna().unique():
+            if player_id is None:
+                continue
+            
+            # Get position from players_df
+            position = 'UNKNOWN'
+            if players_df is not None and 'officialPosition' in players_df.columns:
+                player_row = players_df[players_df['nflId'] == player_id]
+                if len(player_row) > 0:
+                    raw_pos = str(player_row.iloc[0]['officialPosition']).strip().upper()
+                    position = normalize_position(raw_pos, side)
+            
+            # Get average x position (for tie-breaking within same position)
+            player_frames = player_data[player_data['nflId'] == player_id]
+            if len(player_frames) > 0 and 'x' in player_frames.columns:
+                x_avg = player_frames['x'].mean()
+            else:
+                x_avg = 0.0
+            
+            players_list.append((player_id, position, x_avg))
+        
+        # Sort by position priority, then by x position (for consistent ordering within position)
+        players_list.sort(key=lambda x: (get_position_priority(x[1], side), x[2]))
+        
+        return players_list
+    
+    # Get sorted offense and defense players
+    offense_players_sorted = get_player_with_position(offense_data, 'offense')[:11]
+    defense_players_sorted = get_player_with_position(defense_data, 'defense')[:11]
+    
+    # Combine: offense first, then defense
+    all_players_sorted = offense_players_sorted + defense_players_sorted
+    
+    # Extract player IDs and positions
+    all_players = [p[0] for p in all_players_sorted]
+    player_positions = [p[1] for p in all_players_sorted]
     
     # Pad if needed
     while len(all_players) < num_players:
         all_players.append(None)
+        player_positions.append('UNKNOWN')
     all_players = all_players[:num_players]
+    player_positions = player_positions[:num_players]
     
     # Fill tensor
     for t_idx, frame_id in enumerate(frames):
@@ -234,7 +347,7 @@ def extract_player_tensor(
                         val = row[feat]
                         tensor[t_idx, p_idx, f_idx] = float(val) if pd.notna(val) else 0.0
     
-    return tensor
+    return tensor, player_positions
 
 
 def build_context_vector(
@@ -279,14 +392,23 @@ def preprocess_week(
     week_file: Path,
     plays_df: pd.DataFrame,
     games_df: pd.DataFrame,
+    players_df: pd.DataFrame,
     output_dir: Path,
     config: Dict
 ) -> List[Dict]:
     """
     Preprocess tracking data for one week.
     
+    Args:
+        week_file: Path to tracking CSV file for this week
+        plays_df: DataFrame with play metadata
+        games_df: DataFrame with game metadata
+        players_df: DataFrame with player info (nflId, officialPosition)
+        output_dir: Output directory (not used, kept for compatibility)
+        config: Configuration dict
+        
     Returns:
-        List of dicts with 'gameId', 'playId', 'tensor', 'context', 'frame_count'
+        List of dicts with 'gameId', 'playId', 'tensor', 'player_positions', 'context', 'frame_count'
     """
     print(f"Processing {week_file.name}...")
     
@@ -329,11 +451,12 @@ def preprocess_week(
         if len(play_tracking) == 0:
             continue
         
-        # Extract tensor
-        tensor = extract_player_tensor(
+        # Extract tensor with fixed player ordering
+        tensor, player_positions = extract_player_tensor(
             play_tracking, play_info,
             num_players=num_players,
-            features=features
+            features=features,
+            players_df=players_df
         )
         
         # Ensure tensor is exactly max_frames (pad or truncate)
@@ -361,6 +484,7 @@ def preprocess_week(
             'playId': int(play_id),
             'week': week_num,
             'tensor': tensor,  # Now guaranteed to be [max_frames, P, F]
+            'player_positions': player_positions,  # List of position strings [P]
             'context': context,
             'frame_count': non_zero_frames
         })
@@ -374,11 +498,15 @@ def preprocess_all(
     config: Dict
 ):
     """
-    Preprocess all tracking weeks and save to Parquet cache.
+    Preprocess all tracking weeks and save to pickle cache with fixed player ordering.
+    
+    Players are sorted by position for consistent ordering:
+    - Offense: QB, RB, WR, TE, OL
+    - Defense: DL, LB, DB
     
     Args:
-        raw_dir: Directory with raw CSV files
-        cache_dir: Directory to save cached Parquet files
+        raw_dir: Directory with raw CSV files (must contain players.csv)
+        cache_dir: Directory to save cached pickle files
         config: Configuration dict
     """
     cache_dir.mkdir(parents=True, exist_ok=True)
@@ -386,6 +514,16 @@ def preprocess_all(
     # Load metadata
     plays_df = pd.read_csv(raw_dir / 'plays.csv')
     games_df = pd.read_csv(raw_dir / 'games.csv')
+    
+    # Load player positions - REQUIRED for fixed ordering
+    players_file = raw_dir / 'players.csv'
+    if not players_file.exists():
+        raise FileNotFoundError(
+            f"players.csv not found at {players_file}. "
+            "This file is required for fixed player ordering."
+        )
+    players_df = pd.read_csv(players_file)
+    print(f"Loaded {len(players_df)} players from players.csv")
     
     # Add derived fields
     plays_df['clock_seconds'] = plays_df['gameClock'].apply(parse_game_clock)
@@ -400,17 +538,69 @@ def preprocess_all(
     
     all_processed = []
     
-    # Process each week
-    for week_file in sorted(raw_dir.glob('week*.csv')):
+    # Process each week - handle both 'week*.csv' and 'tracking_week_*.csv' patterns
+    week_files = list(raw_dir.glob('week*.csv')) + list(raw_dir.glob('tracking_week_*.csv'))
+    week_files = sorted(set(week_files))  # Remove duplicates
+    
+    if not week_files:
+        raise FileNotFoundError(
+            f"No tracking files found in {raw_dir}. "
+            "Expected files named 'week*.csv' or 'tracking_week_*.csv'"
+        )
+    
+    for week_file in week_files:
         processed = preprocess_week(
-            week_file, plays_df, games_df, cache_dir, config
+            week_file, plays_df, games_df, players_df, cache_dir, config
         )
         all_processed.extend(processed)
     
     print(f"\nProcessed {len(all_processed)} plays total")
     
+    # COMPUTE NORMALIZATION STATISTICS (CRITICAL FOR DIFFUSION MODELS)
+    print("\nComputing normalization statistics...")
+    features = config.get('features', ['x', 'y', 's'])
+    num_features = len(features)
+    
+    # Collect all feature values (excluding padding zeros)
+    feature_means = []
+    feature_stds = []
+    
+    for f_idx in range(num_features):
+        # Get all values for this feature across all plays
+        feature_values = []
+        for play in all_processed:
+            tensor = play['tensor']
+            feature_data = tensor[:, :, f_idx].flatten()
+            # Filter out padding (near-zero values)
+            non_padding = feature_data[np.abs(feature_data) > 1e-6]
+            if len(non_padding) > 0:
+                feature_values.extend(non_padding)
+        
+        if len(feature_values) > 0:
+            feature_values = np.array(feature_values)
+            mean = float(np.mean(feature_values))
+            std = float(np.std(feature_values))
+            # Avoid division by zero
+            if std < 1e-6:
+                std = 1.0
+        else:
+            mean, std = 0.0, 1.0
+        
+        feature_means.append(mean)
+        feature_stds.append(std)
+        print(f"  {features[f_idx]}: mean={mean:.4f}, std={std:.4f}")
+    
+    # NORMALIZE ALL TENSORS
+    print("\nNormalizing coordinates (mean=0, std=1 per feature)...")
+    for play in all_processed:
+        tensor = play['tensor']
+        for f_idx in range(num_features):
+            # Normalize: (x - mean) / std
+            tensor[:, :, f_idx] = (tensor[:, :, f_idx] - feature_means[f_idx]) / feature_stds[f_idx]
+    
+    print("✅ Normalization complete")
+    
     # Save data - use pickle to avoid PyArrow compatibility issues
-    # Save as pickle which is simpler and more reliable
     output_file = cache_dir / 'processed_plays.pkl'
     with open(output_file, 'wb') as f:
         pickle.dump(all_processed, f)
@@ -422,19 +612,30 @@ def preprocess_all(
             'gameId': play['gameId'],
             'playId': play['playId'],
             'week': play['week'],
-            'frame_count': play['frame_count']
+            'frame_count': play['frame_count'],
+            'player_positions': ','.join(play.get('player_positions', ['UNKNOWN'] * 22))
         })
     
     df_summary = pd.DataFrame(records_summary)
     df_summary.to_csv(cache_dir / 'processed_plays_summary.csv', index=False)
     
-    # Save metadata separately
+    # Save metadata WITH NORMALIZATION STATS
     metadata = {
         'num_plays': len(all_processed),
         'tensor_shape': list(all_processed[0]['tensor'].shape) if all_processed else None,
-        'features': config.get('features', ['x', 'y', 's']),
+        'features': features,
         'frames': config.get('frames', 60),
-        'players': config.get('min_players', 22)
+        'players': config.get('min_players', 22),
+        'fixed_ordering': True,
+        'ordering_info': {
+            'offense': 'QB, RB, WR, TE, OL (sorted by position priority)',
+            'defense': 'DL, LB, DB (sorted by position priority)'
+        },
+        'normalization': {
+            'means': feature_means,
+            'stds': feature_stds,
+            'feature_names': features
+        }
     }
     
     # Save metadata
@@ -444,7 +645,7 @@ def preprocess_all(
     
     print(f"Saved to {output_file}")
     print(f"Summary CSV saved to {cache_dir / 'processed_plays_summary.csv'}")
-    print(f"Metadata: {metadata}")
+    print(f"Metadata saved with normalization stats for denormalization")
 
 
 if __name__ == '__main__':

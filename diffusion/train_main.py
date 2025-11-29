@@ -139,7 +139,7 @@ def main():
     # Setup callbacks
     checkpoint_callback = ModelCheckpoint(
         dirpath=output_dir,
-        filename='{epoch}-{val_loss:.4f}',
+        filename='{epoch}-{val_loss:.6f}',  # More precision to see actual loss value
         monitor='val/loss',
         mode='min',
         save_top_k=3,

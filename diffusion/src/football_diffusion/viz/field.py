@@ -5,6 +5,7 @@ import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 import numpy as np
 from typing import Optional, Tuple, List
+from pathlib import Path
 
 # Position constants (defined here to avoid circular imports)
 DEFAULT_OFF_POSITIONS = ['QB', 'RB', 'WR', 'WR', 'TE', 'OL', 'OL', 'OL', 'OL', 'OL', 'OL']
@@ -12,47 +13,35 @@ DEFAULT_DEF_POSITIONS = ['DB'] * 11
 SKILL_POSITIONS = ['QB', 'RB', 'WR', 'TE', 'HB', 'FB']
 
 
-def draw_field(ax, field_length: float = 120, field_width: float = 53.3):
+def draw_field(ax, field_length: float = 100, field_width: float = 53.3):
     """
     Draw football field outline with enhanced labels.
     
     Args:
         ax: Matplotlib axes
-        field_length: Length of field in yards (including end zones)
+        field_length: Length of playable field in yards (0-100, middle at 50)
         field_width: Width of field in yards
     """
-    # Field outline - darker green background
+    # Field outline - darker green background (playable field: 0-100)
     rect = patches.Rectangle(
         (0, 0), field_length, field_width,
         linewidth=2, edgecolor='white', facecolor='#2d5016', alpha=0.8
     )
     ax.add_patch(rect)
     
-    # End zones
-    endzone1 = patches.Rectangle(
-        (0, 0), 10, field_width,
-        linewidth=2, edgecolor='white', facecolor='#0066cc', alpha=0.3
-    )
-    ax.add_patch(endzone1)
-    endzone2 = patches.Rectangle(
-        (110, 0), 10, field_width,
-        linewidth=2, edgecolor='white', facecolor='#0066cc', alpha=0.3
-    )
-    ax.add_patch(endzone2)
-    
-    # Yard lines - thicker for 10-yard markers
+    # Yard lines - thicker for 10-yard markers (0-100 range)
     for yard in range(0, field_length + 1, 5):
         if yard % 10 == 0:
             # Major yard lines (every 10 yards)
             ax.axvline(x=yard, color='white', linewidth=2, alpha=0.8)
-            if 10 <= yard <= 110:
-                # Label above and below
-                ax.text(yard, field_width + 2, str(yard), 
-                       ha='center', va='bottom', fontsize=10, 
-                       fontweight='bold', color='black')
-                ax.text(yard, -2, str(yard), 
-                       ha='center', va='top', fontsize=10, 
-                       fontweight='bold', color='black')
+            # Label above and below (showing distance from 0)
+            label = str(yard) if yard <= 50 else str(100 - yard)
+            ax.text(yard, field_width + 2, label, 
+                   ha='center', va='bottom', fontsize=10, 
+                   fontweight='bold', color='black')
+            ax.text(yard, -2, label, 
+                   ha='center', va='top', fontsize=10, 
+                   fontweight='bold', color='black')
         else:
             # Minor yard lines (every 5 yards)
             ax.axvline(x=yard, color='white', linewidth=0.5, alpha=0.4)
@@ -62,15 +51,19 @@ def draw_field(ax, field_length: float = 120, field_width: float = 53.3):
     ax.axhline(y=field_width, color='white', linewidth=3, alpha=0.8)
     
     # Hash marks (simplified)
-    for yard in range(10, 110, 5):
+    for yard in range(5, field_length, 5):
         ax.plot([yard, yard], [field_width * 0.43, field_width * 0.57],
                'w-', linewidth=0.3, alpha=0.5)
     
-    # 50-yard line marker
-    ax.axvline(x=60, color='white', linewidth=3, alpha=0.9)
-    ax.text(60, field_width + 3, '50', 
+    # 50-yard line marker (midfield) - highlighted
+    ax.axvline(x=50, color='white', linewidth=3, alpha=0.9)
+    ax.text(50, field_width + 3, '50', 
            ha='center', va='bottom', fontsize=12, 
            fontweight='bold', color='black')
+    
+    # Goal lines (0 and 100)
+    ax.axvline(x=0, color='yellow', linewidth=2.5, alpha=0.9, linestyle='-')
+    ax.axvline(x=100, color='yellow', linewidth=2.5, alpha=0.9, linestyle='-')
     
     ax.set_xlim(-5, field_length + 5)
     ax.set_ylim(-5, field_width + 5)
@@ -89,7 +82,10 @@ def plot_trajectory(
     show_path: bool = True,
     player_labels: Optional[List[str]] = None,
     highlight_skill_only: bool = False,
-    personnel_str: Optional[str] = None
+    personnel_str: Optional[str] = None,
+    raw_dir: Optional[Path] = None,
+    game_id: Optional[int] = None,
+    play_id: Optional[int] = None
 ):
     """
     Plot player trajectory on field with optional position labels.
@@ -119,27 +115,31 @@ def plot_trajectory(
     
     T, P, _ = positions.shape
     
-    # Default labels - try to derive from personnel if provided
+    # Default labels - try to load actual positions from players.csv first
+    # If not available, fall back to personnel-based inference (which is approximate)
     if player_labels is None:
         if P == 22:
-            # Try to generate labels from personnel string
-            if personnel_str:
-                from .position_utils import assign_positions_by_formation
-                # Use initial positions to infer formation
-                initial_x = positions[0, :11, 0] if positions.shape[0] > 0 else None
-                initial_y = positions[0, :11, 1] if positions.shape[0] > 0 else None
-                if initial_x is not None and initial_y is not None:
-                    off_labels = assign_positions_by_formation(
-                        personnel_str, 
-                        list(initial_x), 
-                        list(initial_y)
-                    )
+            # Try to get real positions if we have game/play info
+            if raw_dir and game_id and play_id:
+                try:
+                    from .load_real_positions import get_real_player_positions
+                    real_positions = get_real_player_positions(raw_dir, game_id, play_id)
+                    if real_positions:
+                        player_labels = real_positions
+                except Exception as e:
+                    print(f"Note: Could not load actual positions: {e}")
+            
+            # Fallback to personnel-based (approximate)
+            if player_labels is None:
+                if personnel_str:
+                    from .position_utils import parse_personnel
+                    counts = parse_personnel(personnel_str)
+                    # Generate labels based on personnel counts only - may not match right players
+                    labels_list = ['QB'] + ['WR']*counts['WR'] + ['RB']*counts['RB'] + ['TE']*counts['TE'] + ['OL']*counts['OL']
+                    labels_list = (labels_list + ['OL']*11)[:11]
+                    player_labels = labels_list + DEFAULT_DEF_POSITIONS
                 else:
-                    from .position_utils import generate_position_labels
-                    off_labels = generate_position_labels(personnel_str)
-                player_labels = off_labels + DEFAULT_DEF_POSITIONS
-            else:
-                player_labels = DEFAULT_OFF_POSITIONS + DEFAULT_DEF_POSITIONS
+                    player_labels = DEFAULT_OFF_POSITIONS + DEFAULT_DEF_POSITIONS
         else:
             player_labels = [f'P{i+1}' for i in range(P)]
     

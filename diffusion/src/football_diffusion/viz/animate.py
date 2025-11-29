@@ -5,6 +5,7 @@ import matplotlib.pyplot as plt
 import matplotlib.animation as animation
 import numpy as np
 from typing import Optional, List, Dict
+from pathlib import Path
 from .field import draw_field, DEFAULT_OFF_POSITIONS, DEFAULT_DEF_POSITIONS, SKILL_POSITIONS
 
 # Note: Position constants are defined in field.py to avoid circular imports
@@ -18,7 +19,10 @@ def animate_trajectory(
     player_labels: Optional[List[str]] = None,
     animate_skill_only: bool = True,
     show_trails: bool = True,
-    personnel_str: Optional[str] = None
+    personnel_str: Optional[str] = None,
+    raw_dir: Optional[Path] = None,
+    game_id: Optional[int] = None,
+    play_id: Optional[int] = None
 ):
     """
     Animate player trajectory over time with position labels.
@@ -40,27 +44,31 @@ def animate_trajectory(
     
     T, P, _ = positions.shape
     
-    # Default labels - try to derive from personnel if provided
+    # Default labels - try to load actual positions from players.csv first
+    # If not available, fall back to personnel-based inference (which is approximate)
     if player_labels is None:
         if P == 22:
-            # Try to generate labels from personnel string
-            if personnel_str:
-                from .position_utils import assign_positions_by_formation
-                # Use initial positions to infer formation
-                initial_x = positions[0, :11, 0] if positions.shape[0] > 0 else None
-                initial_y = positions[0, :11, 1] if positions.shape[0] > 0 else None
-                if initial_x is not None and initial_y is not None:
-                    off_labels = assign_positions_by_formation(
-                        personnel_str, 
-                        list(initial_x), 
-                        list(initial_y)
-                    )
+            # Try to get real positions if we have game/play info
+            if raw_dir and game_id and play_id:
+                try:
+                    from .load_real_positions import get_real_player_positions
+                    real_positions = get_real_player_positions(raw_dir, game_id, play_id)
+                    if real_positions:
+                        player_labels = real_positions
+                except Exception as e:
+                    pass  # Silently fall through to fallback
+            
+            # Fallback to personnel-based (approximate - counts are right but player assignment may be wrong)
+            if player_labels is None:
+                if personnel_str:
+                    from .position_utils import parse_personnel
+                    counts = parse_personnel(personnel_str)
+                    # Generate labels based on personnel counts only - may not match right players
+                    labels_list = ['QB'] + ['WR']*counts['WR'] + ['RB']*counts['RB'] + ['TE']*counts['TE'] + ['OL']*counts['OL']
+                    labels_list = (labels_list + ['OL']*11)[:11]
+                    player_labels = labels_list + DEFAULT_DEF_POSITIONS
                 else:
-                    from .position_utils import generate_position_labels
-                    off_labels = generate_position_labels(personnel_str)
-                player_labels = off_labels + DEFAULT_DEF_POSITIONS
-            else:
-                player_labels = DEFAULT_OFF_POSITIONS + DEFAULT_DEF_POSITIONS
+                    player_labels = DEFAULT_OFF_POSITIONS + DEFAULT_DEF_POSITIONS
         else:
             player_labels = [f'P{i+1}' for i in range(P)]
     elif len(player_labels) < P:

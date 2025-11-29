@@ -3,6 +3,7 @@ Utilities for parsing personnel and assigning position labels.
 """
 import re
 from typing import List, Optional
+import numpy as np
 
 
 def parse_personnel(personnel_str: str) -> dict:
@@ -80,21 +81,154 @@ def generate_position_labels(personnel_str: str, sort_by_x: Optional[List[float]
     return labels
 
 
+def assign_positions_by_motion(
+    personnel_str: str,
+    trajectory: 'np.ndarray'  # [T, P, 2] or [T, P, F]
+) -> List[str]:
+    """
+    Assign positions based on motion patterns and initial formation.
+    
+    Uses motion characteristics:
+    - QB: Stays in pocket (low initial movement, moves backwards/sideways)
+    - RB: Fast acceleration, runs forward routes
+    - WR: Already identified by width, fast movement
+    - TE: Moderate movement, often starts near OL then moves out
+    - OL: Minimal movement, stays on line
+    
+    Args:
+        personnel_str: String like "1 RB, 1 TE, 3 WR"
+        trajectory: Full trajectory [T, P, 2] or [T, P, F] (positions over time)
+    """
+    import numpy as np
+    
+    counts = parse_personnel(personnel_str)
+    
+    # Extract x, y positions
+    if trajectory.shape[-1] >= 2:
+        positions = trajectory[:, :, :2]  # [T, P, 2]
+    else:
+        positions = trajectory
+    
+    T, P, _ = positions.shape
+    if P < 11:
+        return generate_position_labels(personnel_str)
+    
+    # Only analyze first 11 players (offense)
+    off_positions = positions[:, :11, :]  # [T, 11, 2]
+    
+    # Get initial positions (first few frames average)
+    initial_frames = min(5, T)
+    initial_x = np.mean(off_positions[:initial_frames, :, 0], axis=0)  # [11]
+    initial_y = np.mean(off_positions[:initial_frames, :, 1], axis=0)  # [11]
+    
+    # Calculate motion metrics for each player
+    motion_metrics = []
+    center_y = 26.65
+    
+    for p in range(11):
+        player_pos = off_positions[:, p, :]  # [T, 2]
+        
+        # 1. Total displacement (how far they moved)
+        displacement = np.linalg.norm(player_pos[-1] - player_pos[0])
+        
+        # 2. Forward progress (x-direction movement)
+        forward_progress = player_pos[-1, 0] - player_pos[0, 0]
+        
+        # 3. Lateral movement (y-direction variation)
+        lateral_movement = np.std(player_pos[:, 1])
+        
+        # 4. Average speed
+        if T > 1:
+            velocities = np.diff(player_pos, axis=0)  # [T-1, 2]
+            speeds = np.linalg.norm(velocities, axis=1)
+            avg_speed = np.mean(speeds)
+            max_speed = np.max(speeds)
+        else:
+            avg_speed = 0
+            max_speed = 0
+        
+        # 5. Initial x position (back to front)
+        initial_x_pos = initial_x[p]
+        
+        # 6. Distance from center line
+        dist_from_center = abs(initial_y[p] - center_y)
+        
+        motion_metrics.append({
+            'idx': p,
+            'displacement': displacement,
+            'forward_progress': forward_progress,
+            'lateral_movement': lateral_movement,
+            'avg_speed': avg_speed,
+            'max_speed': max_speed,
+            'initial_x': initial_x_pos,
+            'dist_from_center': dist_from_center
+        })
+    
+    labels = [''] * 11
+    
+    # 1. QB: Furthest back (smallest x) AND minimal forward movement initially
+    qb_candidates = sorted(motion_metrics, key=lambda m: (m['initial_x'], m['forward_progress']))
+    qb_idx = qb_candidates[0]['idx']
+    labels[qb_idx] = 'QB'
+    
+    # 2. WRs: Widest players (furthest from center) - already correctly identified
+    wr_candidates = [(m['idx'], m['dist_from_center']) 
+                     for m in motion_metrics if labels[m['idx']] == '']
+    wr_candidates.sort(key=lambda x: x[1], reverse=True)
+    
+    wr_count = counts['WR']
+    for i in range(min(wr_count, len(wr_candidates))):
+        labels[wr_candidates[i][0]] = 'WR'
+    
+    # 3. OL: On line (largest x), minimal movement, near center
+    ol_candidates = [(m['idx'], m['initial_x'], m['dist_from_center'], m['displacement'])
+                     for m in motion_metrics if labels[m['idx']] == '']
+    # Sort by: front (large x), centered (small y dist), minimal movement
+    ol_candidates.sort(key=lambda x: (-x[1], x[2], x[3]))
+    
+    ol_count = counts['OL']
+    for i in range(min(ol_count, len(ol_candidates))):
+        labels[ol_candidates[i][0]] = 'OL'
+    
+    # 4. RB: High speed/acceleration, good forward progress, behind OL
+    rb_candidates = [(m['idx'], m['max_speed'], m['forward_progress'], -m['initial_x'])
+                     for m in motion_metrics if labels[m['idx']] == '']
+    # Sort by: high speed, good forward progress, back position
+    rb_candidates.sort(key=lambda x: (-x[1], -x[2], x[3]))
+    
+    rb_count = counts['RB']
+    for i in range(min(rb_count, len(rb_candidates))):
+        labels[rb_candidates[i][0]] = 'RB'
+    
+    # 5. TE: Remaining players (moderate movement, near OL but moves)
+    te_count = counts['TE']
+    te_candidates = [m['idx'] for m in motion_metrics if labels[m['idx']] == '']
+    for i in range(min(te_count, len(te_candidates))):
+        labels[te_candidates[i]] = 'TE'
+    
+    # Fill any remaining with OL
+    for i in range(11):
+        if labels[i] == '':
+            labels[i] = 'OL'
+    
+    return labels[:11]
+
+
 def assign_positions_by_formation(
     personnel_str: str,
     initial_x: List[float],
-    initial_y: List[float]
+    initial_y: List[float],
+    trajectory: Optional[np.ndarray] = None
 ) -> List[str]:
     """
     Assign positions based on personnel and initial formation.
-    
-    Uses position on field to infer roles:
-    - QB: typically furthest back (smallest x)
-    - WR: typically widest (furthest from center line y=26.65)
-    - OL: typically on line of scrimmage (largest x, near center)
-    - RB: typically behind QB but ahead of some players
-    - TE: typically next to OL but not as wide as WR
+    If trajectory is provided, uses motion-based assignment instead.
     """
+    # If trajectory is available, use motion-based assignment (more accurate)
+    if trajectory is not None:
+        return assign_positions_by_motion(personnel_str, trajectory)
+    
+    # Otherwise, use formation-based assignment
     counts = parse_personnel(personnel_str)
     
     if len(initial_x) < 11 or len(initial_y) < 11:

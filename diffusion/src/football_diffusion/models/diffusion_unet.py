@@ -76,11 +76,15 @@ class TemporalUpBlock(nn.Module):
         in_channels: int,
         out_channels: int,
         kernel_size: int = 3,
-        groups: int = 1
+        groups: int = 1,
+        skip_channels: Optional[int] = None
     ):
         super().__init__()
         self.upsample = nn.ConvTranspose1d(in_channels, out_channels, kernel_size=2, stride=2, padding=0)
-        self.conv1 = TemporalConvBlock(out_channels * 2, out_channels, kernel_size, groups=groups)
+        # Skip connection channels may differ from out_channels, account for that
+        skip_ch = skip_channels if skip_channels is not None else out_channels
+        concat_channels = out_channels + skip_ch
+        self.conv1 = TemporalConvBlock(concat_channels, out_channels, kernel_size, groups=groups)
         self.conv2 = TemporalConvBlock(out_channels, out_channels, kernel_size, groups=groups)
     
     def forward(self, x: torch.Tensor, skip: torch.Tensor) -> torch.Tensor:
@@ -217,17 +221,32 @@ class TemporalUNet(nn.Module):
         self.bottleneck_conv2 = TemporalConvBlock(curr_channels, curr_channels, temporal_kernel)
         self.bottleneck_film = FiLM(condition_dim + time_dim, curr_channels)
         
-        # Decoder
+        # Decoder - track skip connection channels to match encoder output
         self.up_blocks = nn.ModuleList()
         self.up_films = nn.ModuleList()
+        
+        # Calculate skip channel sizes (same as encoder output channels, in encoder order)
+        skip_channel_list = []
+        temp_curr = channels
+        for i in range(depth):
+            temp_next = min(channels * (2 ** (i + 1)), 512)
+            skip_channel_list.append(temp_next)
+            temp_curr = temp_next
+        
+        # Build up blocks - reverse through depths
+        curr_up_channels = curr_channels  # Start from bottleneck (512)
         for i in range(depth - 1, -1, -1):
-            prev_channels = min(channels * (2 ** (i + 1)), 512) if i < depth - 1 else curr_channels
-            next_channels = min(channels * (2 ** i), 512)
+            # Skip connection from encoder level i
+            skip_ch = skip_channel_list[i]
+            # Output channels for this decoder level
+            next_channels = min(channels * (2 ** i), 512) if i > 0 else channels
             groups = max(1, next_channels // player_heads)
+            
             self.up_blocks.append(
-                TemporalUpBlock(prev_channels, next_channels, temporal_kernel, groups=groups)
+                TemporalUpBlock(curr_up_channels, next_channels, temporal_kernel, groups=groups, skip_channels=skip_ch)
             )
             self.up_films.append(FiLM(condition_dim + time_dim, next_channels))
+            curr_up_channels = next_channels
         
         # Output projection
         self.output_proj = nn.Conv1d(channels, in_channels, kernel_size=1)

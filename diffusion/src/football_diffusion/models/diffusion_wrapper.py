@@ -141,7 +141,11 @@ class FootballDiffusion(nn.Module):
             context_emb = torch.zeros_like(context_emb)
         
         # Reshape for model: [B, T, P, F] -> [B, P*F, T]
-        x_reshaped = x.permute(0, 2, 3, 1).contiguous()  # [B, P, F, T]
+        # CRITICAL: Model expects [B, P*F, T] shape (e.g., [B, 66, 60] for 22 players * 3 features)
+        # This must match sampling which uses torch.randn(B, P*F, T)
+        x_reshaped = x.permute(0, 2, 3, 1).contiguous()  # [B, T, P, F] -> [B, P, F, T]
+        B, P, F, T = x_reshaped.shape
+        x_reshaped = x_reshaped.reshape(B, P * F, T)  # [B, P, F, T] -> [B, P*F, T]
         
         # Add noise
         noisy, noise = q_sample(
@@ -151,12 +155,13 @@ class FootballDiffusion(nn.Module):
             self.sqrt_one_minus_alphas_cumprod
         )
         
-        # Predict noise
+        # Predict noise (model expects [B, P*F, T])
         predicted_noise = self.model(noisy, timestep, context_emb)
         
         # Reshape back: [B, P*F, T] -> [B, T, P, F]
-        predicted_noise = predicted_noise.permute(0, 3, 1, 2).contiguous()
-        noise_target = noise.permute(0, 3, 1, 2).contiguous()
+        # Model outputs [B, P*F, T], reshape to [B, P, F, T], then permute
+        predicted_noise = predicted_noise.reshape(B, P, F, T).permute(0, 3, 1, 2).contiguous()  # [B, T, P, F]
+        noise_target = noise.reshape(B, P, F, T).permute(0, 3, 1, 2).contiguous()  # [B, T, P, F]
         
         return predicted_noise, noise_target
     
@@ -260,8 +265,8 @@ class FootballDiffusion(nn.Module):
                     x = (x - torch.sqrt(1 - alpha_cumprod_t) * pred_noise) / torch.sqrt(alpha_cumprod_t)
         
         # Reshape: [B, P*F, T] -> [B, T, P, F]
-        x = x.permute(0, 2, 1).contiguous()  # [B, T, P*F]
-        x = x.reshape(B, T, P, F)
+        # Use same reshape method as training for consistency
+        x = x.reshape(B, P, F, T).permute(0, 3, 1, 2).contiguous()  # [B, T, P, F]
         
         return x
 
