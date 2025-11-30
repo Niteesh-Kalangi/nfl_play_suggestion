@@ -39,7 +39,7 @@ train:
 
 loss:
   lambda_anchor: 1.0  # Weight for anchor loss at t=0
-  lambda_smooth: 0.1  # Weight for velocity smoothness loss
+  lambda_smooth: 0.5  # Weight for velocity smoothness loss (increased for smoother trajectories)
   lambda_bounds: 0.1  # Weight for boundary penalty (disabled for normalized data)
 
 generation:

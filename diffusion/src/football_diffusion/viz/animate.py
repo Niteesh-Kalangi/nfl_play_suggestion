@@ -80,8 +80,8 @@ def animate_trajectory(
     else:
         animate_mask = [True] * P
     
-    # Setup figure
-    fig, ax = plt.subplots(figsize=(14, 7))
+    # Setup figure (smaller size to reduce animation file size)
+    fig, ax = plt.subplots(figsize=(10, 5))
     if show_field:
         draw_field(ax)
     else:

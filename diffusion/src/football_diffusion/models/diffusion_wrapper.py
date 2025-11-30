@@ -403,15 +403,121 @@ class FootballDiffusion(nn.Module):
                 if F > 2:
                     x_reshaped[:, 0, :, 2] = torch.where(
                         anchor_mask_batch,
-                        torch.zeros_like(x_reshaped[:, 0, :, 2]),  # speed = 0
+                        torch.zeros_like(x_reshaped[:, 0, :, 2]),  # speed = 0 at snap
                         x_reshaped[:, 0, :, 2]
                     )
+                
+                # STRONG SMOOTHNESS CONSTRAINT: Apply to multiple initial frames for gradual movement
+                # Limit velocity to ~1 yard per frame for anchored players to ensure gradual route development
+                # Apply throughout denoising (not just later steps) for better smoothness
+                
+                # In normalized space: 1 yard ≈ 1 / std_y ≈ 1 / 8.8 ≈ 0.11
+                # Use slightly higher (1.5 yards) to allow realistic acceleration while staying smooth
+                max_velocity_norm = 0.17  # Normalized units (equivalent to ~1.5 yards per frame)
+                
+                # Apply velocity constraints to first 3 frames (t=1, t=2, t=3)
+                # This ensures gradual movement in the initial route development phase
+                for frame_idx in range(1, min(4, T)):  # Frames 1, 2, 3 (up to frame 3)
+                    if frame_idx < T:
+                        # Compute velocity from previous frame
+                        prev_frame = frame_idx - 1
+                        velocity = x_reshaped[:, frame_idx, :, :2] - x_reshaped[:, prev_frame, :, :2]  # [B, P, 2]
+                        
+                        # Limit maximum velocity magnitude for anchored players
+                        velocity_magnitude = torch.norm(velocity, dim=-1, keepdim=True)  # [B, P, 1]
+                        scale_factor = torch.clamp(
+                            max_velocity_norm / (velocity_magnitude + 1e-8),
+                            max=1.0
+                        )
+                        velocity_clamped = velocity * scale_factor
+                        
+                        # Prevent direction reversal: if velocity magnitude is very small, maintain previous direction
+                        # This prevents erratic direction changes
+                        small_velocity_mask = (velocity_magnitude.squeeze(-1) < 0.05)  # Very small movements
+                        if frame_idx > 1 and small_velocity_mask.any():
+                            # Use previous frame's velocity direction as guidance
+                            prev_velocity = x_reshaped[:, prev_frame, :, :2] - x_reshaped[:, prev_frame-1, :, :2]
+                            prev_velocity_norm = torch.norm(prev_velocity, dim=-1, keepdim=True) + 1e-8
+                            prev_velocity_unit = prev_velocity / prev_velocity_norm
+                            # Maintain direction with small magnitude
+                            velocity_clamped = torch.where(
+                                small_velocity_mask.unsqueeze(-1).expand_as(velocity_clamped),
+                                prev_velocity_unit * max_velocity_norm * 0.5,  # Half speed in same direction
+                                velocity_clamped
+                            )
+                        
+                        # Apply clamping only to anchored players (offense)
+                        x_reshaped[:, frame_idx, :, 0] = torch.where(
+                            anchor_mask_batch,
+                            x_reshaped[:, prev_frame, :, 0] + velocity_clamped[:, :, 0],
+                            x_reshaped[:, frame_idx, :, 0]
+                        )
+                        x_reshaped[:, frame_idx, :, 1] = torch.where(
+                            anchor_mask_batch,
+                            x_reshaped[:, prev_frame, :, 1] + velocity_clamped[:, :, 1],
+                            x_reshaped[:, frame_idx, :, 1]
+                        )
+                
+                # Additional: Smooth velocity for frames 4-10 (transition phase)
+                # Apply gentler constraints to prevent sudden direction changes
+                for frame_idx in range(4, min(11, T)):
+                    if frame_idx < T:
+                        prev_frame = frame_idx - 1
+                        velocity = x_reshaped[:, frame_idx, :, :2] - x_reshaped[:, prev_frame, :, :2]
+                        velocity_magnitude = torch.norm(velocity, dim=-1, keepdim=True)
+                        
+                        # Allow up to 2.5 yards per frame (still reasonable)
+                        max_velocity_transition = 0.28  # ~2.5 yards
+                        scale_factor = torch.clamp(
+                            max_velocity_transition / (velocity_magnitude + 1e-8),
+                            max=1.0
+                        )
+                        velocity_clamped = velocity * scale_factor
+                        
+                        x_reshaped[:, frame_idx, :, 0] = torch.where(
+                            anchor_mask_batch,
+                            x_reshaped[:, prev_frame, :, 0] + velocity_clamped[:, :, 0],
+                            x_reshaped[:, frame_idx, :, 0]
+                        )
+                        x_reshaped[:, frame_idx, :, 1] = torch.where(
+                            anchor_mask_batch,
+                            x_reshaped[:, prev_frame, :, 1] + velocity_clamped[:, :, 1],
+                            x_reshaped[:, frame_idx, :, 1]
+                        )
                 
                 # Reshape back to [B, P*F, T]
                 x = x_reshaped.permute(0, 2, 3, 1).reshape(B, P * F, T)
         
         # Final reshape: [B, P*F, T] -> [B, T, P, F]
         x = x.reshape(B, P, F, T).permute(0, 3, 1, 2).contiguous()
+        
+        # POST-PROCESSING: Apply smoothing to final output for extra smoothness
+        # This helps reduce any remaining erratic movements
+        if freeze_t0:
+            x_smooth = x.clone()
+            anchor_mask_expanded = anchor_mask.unsqueeze(0).unsqueeze(-1)  # [1, P, 1]
+            
+            # Smooth positions for anchored players using moving average
+            # This creates more gradual transitions between frames
+            for t in range(1, T):
+                # Weighted average: 70% current + 30% previous (prevents sudden changes)
+                prev_pos = x_smooth[:, t-1, :, :2]  # [B, P, 2]
+                curr_pos = x_smooth[:, t, :, :2]     # [B, P, 2]
+                smoothed_pos = 0.7 * curr_pos + 0.3 * prev_pos
+                
+                # Apply smoothing only to anchored players
+                x_smooth[:, t, :, 0] = torch.where(
+                    anchor_mask_expanded.expand(B, -1, -1)[:, :, 0],
+                    smoothed_pos[:, :, 0],
+                    x[:, t, :, 0]
+                )
+                x_smooth[:, t, :, 1] = torch.where(
+                    anchor_mask_expanded.expand(B, -1, -1)[:, :, 0],
+                    smoothed_pos[:, :, 1],
+                    x[:, t, :, 1]
+                )
+            
+            x = x_smooth
         
         return x
 

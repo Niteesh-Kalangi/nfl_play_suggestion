@@ -54,7 +54,8 @@ class DiffusionLightningModule(pl.LightningModule):
         
         # Loss weights
         self.noise_loss_weight = 1.0
-        self.velocity_loss_weight = 0.1
+        loss_config = config.get('loss', {})
+        self.velocity_loss_weight = float(loss_config.get('lambda_smooth', 0.5))  # Increased for smoother trajectories
         self.boundary_loss_weight = 0.0  # Disabled: data is normalized, boundary loss not applicable
         
         # Anchor loss weight
