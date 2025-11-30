@@ -13,7 +13,7 @@ data:
 
 conditioning:
   cat: [down, offensiveFormation, personnelO, defTeam, situation]
-  cont: [yardsToGo, yardlineNorm]
+  cont: [yardsToGo, yardlineNorm, hash_mark]  # hash_mark: 0.0=LEFT, 0.5=MIDDLE, 1.0=RIGHT
   drop_prob: 0.1  # Classifier-free guidance dropout probability
 
 diffusion:
@@ -29,13 +29,23 @@ diffusion:
 
 train:
   optimizer: adamw
-  lr: 1e-4
+  lr: 2e-4  # Increased from 1e-4: better for route-focused data and anchor loss learning
   wd: 1e-2
   batch_size: 32
   max_epochs: 50
   grad_clip: 1.0
   accumulate_grad_batches: 1
   val_check_interval: 0.5
+
+loss:
+  lambda_anchor: 1.0  # Weight for anchor loss at t=0
+  lambda_smooth: 0.1  # Weight for velocity smoothness loss
+  lambda_bounds: 0.1  # Weight for boundary penalty (disabled for normalized data)
+
+generation:
+  freeze_t0: true  # Lock t=0 to formation anchors during sampling
+  anchor_delta: 0.25  # Huber loss delta for anchor loss (yards tolerance)
+  hash_default: MIDDLE  # Default hash mark if not provided (LEFT, MIDDLE, RIGHT)
 
 eval:
   n_samples_per_context: 8

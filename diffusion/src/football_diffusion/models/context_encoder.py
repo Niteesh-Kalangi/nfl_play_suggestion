@@ -11,7 +11,7 @@ class ContextEncoder(nn.Module):
     Encodes categorical and continuous context features for conditioning.
     
     Categorical features: down, offensiveFormation, personnelO, defTeam, situation
-    Continuous features: yardsToGo, yardlineNorm
+    Continuous features: yardsToGo, yardlineNorm, hash_mark (encoded as 0.0=LEFT, 0.5=MIDDLE, 1.0=RIGHT)
     """
     
     def __init__(
@@ -49,9 +49,10 @@ class ContextEncoder(nn.Module):
             'situation': nn.Embedding(4, embedding_dims['situation'])  # short, medium, long + padding
         })
         
-        # Continuous features MLP (yardsToGo, yardlineNorm)
+        # Continuous features MLP (yardsToGo, yardlineNorm, hash_mark)
+        # hash_mark: 0.0=LEFT, 0.5=MIDDLE, 1.0=RIGHT
         self.continuous_mlp = nn.Sequential(
-            nn.Linear(2, hidden_dim),
+            nn.Linear(3, hidden_dim),  # Now 3 features: yardsToGo, yardlineNorm, hash_mark
             nn.ReLU(),
             nn.Linear(hidden_dim, hidden_dim // 2)
         )
@@ -128,7 +129,7 @@ class ContextEncoder(nn.Module):
         
         Args:
             categorical: List of dicts with categorical features
-            continuous: Tensor [B, 2] with (yardsToGo, yardlineNorm) - already on correct device
+            continuous: Tensor [B, 3] with (yardsToGo, yardlineNorm, hash_mark) - already on correct device
             
         Returns:
             Context embedding [B, output_dim]

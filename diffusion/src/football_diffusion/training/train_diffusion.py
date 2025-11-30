@@ -56,6 +56,10 @@ class DiffusionLightningModule(pl.LightningModule):
         self.noise_loss_weight = 1.0
         self.velocity_loss_weight = 0.1
         self.boundary_loss_weight = 0.0  # Disabled: data is normalized, boundary loss not applicable
+        
+        # Anchor loss weight
+        self.anchor_loss_weight = config.get('loss', {}).get('lambda_anchor', 1.0)
+        self.anchor_delta = config.get('generation', {}).get('anchor_delta', 0.25)  # Huber loss delta in yards
     
     def forward(
         self,
@@ -74,7 +78,10 @@ class DiffusionLightningModule(pl.LightningModule):
         predicted_noise: torch.Tensor,
         target_noise: torch.Tensor,
         x: torch.Tensor,
-        mask: Optional[torch.Tensor] = None
+        mask: Optional[torch.Tensor] = None,
+        anchors_t0: Optional[torch.Tensor] = None,
+        anchor_mask: Optional[torch.Tensor] = None,
+        timestep: Optional[torch.Tensor] = None
     ) -> Dict[str, torch.Tensor]:
         """
         Compute combined loss: noise MSE + velocity smoothness + boundary penalty.
@@ -120,23 +127,49 @@ class DiffusionLightningModule(pl.LightningModule):
         # For normalized data, coordinates are roughly in [-3, 3] range, so raw bounds [0, 120] don't apply
         boundary_loss = torch.tensor(0.0, device=x.device)
         
-        # Future: If we want boundary loss on normalized data, we'd need to:
-        # 1. Get normalization stats from metadata
-        # 2. Normalize the field bounds: (bounds - mean) / std
-        # 3. Apply penalty to normalized coordinates
+        # Anchor loss: penalize deviation from anchors at t=0 for anchored players
+        anchor_loss = torch.tensor(0.0, device=x.device)
+        if anchors_t0 is not None and anchor_mask is not None and timestep is not None:
+            # Reconstruct x0 from noisy x_t and predicted noise for timestep 0
+            # Only compute anchor loss when timestep is 0
+            timestep_zero_mask = (timestep == 0)  # [B]
+            
+            if timestep_zero_mask.any():
+                # For timestep 0, we can directly compare x with anchors
+                # Get x0 positions (first 2 features are x, y)
+                x0_positions = x[:, 0, :, :2]  # [B, P, 2]
+                anchors_expanded = anchors_t0.unsqueeze(0).expand_as(x0_positions)  # [B, P, 2]
+                anchor_mask_expanded = anchor_mask.unsqueeze(0).unsqueeze(-1)  # [B, P, 1]
+                
+                # Compute Huber loss (smooth L1) only for anchored players
+                diff = x0_positions - anchors_expanded  # [B, P, 2]
+                
+                # Apply anchor mask
+                diff_masked = diff * anchor_mask_expanded.float()  # [B, P, 2]
+                
+                # Huber loss (smooth L1)
+                abs_diff = torch.abs(diff_masked)
+                quadratic = 0.5 * (self.anchor_delta ** 2)
+                linear = self.anchor_delta * (abs_diff - 0.5 * self.anchor_delta)
+                anchor_loss_t = torch.where(abs_diff < self.anchor_delta, 0.5 * (abs_diff ** 2), linear)
+                
+                # Average over spatial dimensions and anchored players
+                anchor_loss = anchor_loss_t.mean()
         
         # Combined loss
         total_loss = (
             self.noise_loss_weight * noise_loss +
             self.velocity_loss_weight * velocity_loss +
-            self.boundary_loss_weight * boundary_loss
+            self.boundary_loss_weight * boundary_loss +
+            self.anchor_loss_weight * anchor_loss
         )
         
         return {
             'loss': total_loss,
             'noise_loss': noise_loss,
             'velocity_loss': velocity_loss,
-            'boundary_loss': boundary_loss
+            'boundary_loss': boundary_loss,
+            'anchor_loss': anchor_loss
         }
     
     def training_step(self, batch: Dict, batch_idx: int) -> torch.Tensor:
@@ -145,20 +178,26 @@ class DiffusionLightningModule(pl.LightningModule):
         context_cat = batch['context_categorical']
         context_cont = batch['context_continuous']
         mask = batch.get('mask', None)  # [B, T] - optional mask for padding
+        anchors_t0 = batch.get('anchors_t0', None)  # [P, 2]
+        anchor_mask = batch.get('anchor_mask', None)  # [P]
         
         # Forward pass
-        predicted_noise, target_noise = self.model(
-            x, context_cat, context_cont
+        predicted_noise, target_noise, timestep = self.model(
+            x, context_cat, context_cont, return_timestep=True
         )
         
-        # Compute loss (with optional mask)
-        losses = self.compute_loss(predicted_noise, target_noise, x, mask)
+        # Compute loss (with optional mask and anchors)
+        losses = self.compute_loss(
+            predicted_noise, target_noise, x, mask,
+            anchors_t0=anchors_t0, anchor_mask=anchor_mask, timestep=timestep
+        )
         
         # Log metrics
         self.log('train/loss', losses['loss'], on_step=True, on_epoch=True, prog_bar=True)
         self.log('train/noise_loss', losses['noise_loss'], on_step=True, on_epoch=True)
         self.log('train/velocity_loss', losses['velocity_loss'], on_step=True, on_epoch=True)
         self.log('train/boundary_loss', losses['boundary_loss'], on_step=True, on_epoch=True)
+        self.log('train/anchor_loss', losses['anchor_loss'], on_step=True, on_epoch=True)
         
         return losses['loss']
     
@@ -168,18 +207,24 @@ class DiffusionLightningModule(pl.LightningModule):
         context_cat = batch['context_categorical']
         context_cont = batch['context_continuous']
         mask = batch.get('mask', None)  # [B, T] - optional mask for padding
+        anchors_t0 = batch.get('anchors_t0', None)  # [P, 2]
+        anchor_mask = batch.get('anchor_mask', None)  # [P]
         
         # Forward pass
-        predicted_noise, target_noise = self.model(
-            x, context_cat, context_cont, drop_context=False
+        predicted_noise, target_noise, timestep = self.model(
+            x, context_cat, context_cont, drop_context=False, return_timestep=True
         )
         
-        # Compute loss (with optional mask)
-        losses = self.compute_loss(predicted_noise, target_noise, x, mask)
+        # Compute loss (with optional mask and anchors)
+        losses = self.compute_loss(
+            predicted_noise, target_noise, x, mask,
+            anchors_t0=anchors_t0, anchor_mask=anchor_mask, timestep=timestep
+        )
         
         # Log metrics
         self.log('val/loss', losses['loss'], on_step=False, on_epoch=True, prog_bar=True)
         self.log('val/noise_loss', losses['noise_loss'], on_step=False, on_epoch=True)
+        self.log('val/anchor_loss', losses['anchor_loss'], on_step=False, on_epoch=True)
         
         return losses
     

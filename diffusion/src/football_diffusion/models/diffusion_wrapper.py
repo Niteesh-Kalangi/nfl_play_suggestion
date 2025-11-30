@@ -4,7 +4,7 @@ Diffusion model wrapper with DDPM/DDIM sampling.
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Dict
 import numpy as np
 
 from .diffusion_unet import TemporalUNet
@@ -108,8 +108,9 @@ class FootballDiffusion(nn.Module):
         context_categorical: list,
         context_continuous: torch.Tensor,
         timestep: Optional[torch.Tensor] = None,
-        drop_context: Optional[bool] = None
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        drop_context: Optional[bool] = None,
+        return_timestep: bool = False
+    ) -> Tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor]]:
         """
         Forward pass for training.
         
@@ -163,6 +164,8 @@ class FootballDiffusion(nn.Module):
         predicted_noise = predicted_noise.reshape(B, P, F, T).permute(0, 3, 1, 2).contiguous()  # [B, T, P, F]
         noise_target = noise.reshape(B, P, F, T).permute(0, 3, 1, 2).contiguous()  # [B, T, P, F]
         
+        if return_timestep:
+            return predicted_noise, noise_target, timestep
         return predicted_noise, noise_target
     
     @torch.no_grad()
@@ -267,6 +270,148 @@ class FootballDiffusion(nn.Module):
         # Reshape: [B, P*F, T] -> [B, T, P, F]
         # Use same reshape method as training for consistency
         x = x.reshape(B, P, F, T).permute(0, 3, 1, 2).contiguous()  # [B, T, P, F]
+        
+        return x
+    
+    @torch.no_grad()
+    def sample_with_setup(
+        self,
+        shape: Tuple[int, int, int],  # (T, P, F)
+        context_categorical: list,
+        context_continuous: torch.Tensor,
+        anchors_t0: torch.Tensor,  # [P, 2] anchor positions for t=0 in field coordinates
+        anchor_mask: torch.Tensor,  # [P] boolean mask
+        num_steps: int = 50,
+        ddim: bool = False,
+        eta: float = 0.0,
+        freeze_t0: bool = True,
+        normalization_stats: Optional[Dict] = None
+    ) -> torch.Tensor:
+        """
+        Sample with formation anchors - freeze t=0 to anchors DURING sampling.
+        
+        Args:
+            shape: (T, P, F) - shape of output trajectory
+            context_categorical: List of categorical context dicts
+            context_continuous: [B, 3] - continuous context (yardsToGo, yardlineNorm, hash_mark)
+            anchors_t0: [P, 2] - anchor positions (x, y) for t=0 in FIELD coordinates
+            anchor_mask: [P] - boolean mask indicating which players are anchored
+            num_steps: Number of sampling steps
+            ddim: Use DDIM sampling
+            eta: DDIM parameter
+            freeze_t0: If True, lock t=0 to anchors after each step
+            normalization_stats: Dict with 'means' and 'stds' for denormalization
+            
+        Returns:
+            [B, T, P, F] - generated trajectories with t=0 locked to anchors
+        """
+        B = context_continuous.shape[0]
+        T, P, F = shape
+        device = context_continuous.device
+        
+        # Normalize anchors from field space to normalized space
+        if normalization_stats is not None:
+            means = torch.tensor(normalization_stats['means'][:2], device=device)  # [2] for x, y
+            stds = torch.tensor(normalization_stats['stds'][:2], device=device)  # [2] for x, y
+            anchors_normalized = (anchors_t0 - means) / stds  # [P, 2]
+        else:
+            anchors_normalized = anchors_t0  # Assume already normalized
+        
+        # Expand anchors to batch: [P, 2] -> [B, P, 2]
+        anchors_batch = anchors_normalized.unsqueeze(0).expand(B, -1, -1).to(device)  # [B, P, 2]
+        anchor_mask_batch = anchor_mask.unsqueeze(0).expand(B, -1).to(device)  # [B, P]
+        
+        # Encode context
+        context_emb = self.context_encoder(context_categorical, context_continuous)
+        
+        # Classifier-free guidance
+        if self.guidance_scale > 1.0:
+            null_context = torch.zeros_like(context_emb)
+            context_emb = torch.cat([context_emb, null_context], dim=0)
+        
+        # Start from pure noise [B, P*F, T]
+        x = torch.randn(B, P * F, T, device=device)
+        
+        # Sampling loop (similar to sample(), but freeze t=0 after each step)
+        step_size = self.num_timesteps // num_steps
+        timesteps = torch.arange(0, self.num_timesteps, step_size, device=device).long()
+        timesteps = timesteps.flip(0)  # Reverse order
+        
+        for i, t in enumerate(timesteps):
+            # Expand timestep for batch
+            t_batch = t.repeat(B)
+            
+            if self.guidance_scale > 1.0:
+                t_batch_guidance = t_batch.repeat(2)
+                x_guidance = x.repeat(2, 1, 1)
+                pred_noise = self.model(x_guidance, t_batch_guidance, context_emb)
+                pred_noise_cond, pred_noise_uncond = pred_noise.chunk(2)
+                pred_noise = pred_noise_uncond + self.guidance_scale * (pred_noise_cond - pred_noise_uncond)
+            else:
+                pred_noise = self.model(x, t_batch, context_emb)
+            
+            if ddim:
+                alpha_t = extract(self.alphas_cumprod, t_batch, x.shape)
+                alpha_prev = extract(
+                    self.alphas_cumprod,
+                    (t - step_size).clamp(min=0) if i < len(timesteps) - 1 else torch.zeros_like(t_batch),
+                    x.shape
+                )
+                pred_x0 = (x - torch.sqrt(1 - alpha_t) * pred_noise) / torch.sqrt(alpha_t)
+                dir_xt = torch.sqrt(1 - alpha_prev - eta**2 * (1 - alpha_prev)) * pred_noise
+                
+                if i < len(timesteps) - 1:
+                    noise = eta * torch.sqrt(1 - alpha_prev) * torch.randn_like(x)
+                else:
+                    noise = 0
+                
+                x = torch.sqrt(alpha_prev) * pred_x0 + dir_xt + noise
+            else:
+                # DDPM sampling
+                alpha_t = extract(self.alphas, t_batch, x.shape)
+                alpha_cumprod_t = extract(self.alphas_cumprod, t_batch, x.shape)
+                beta_t = extract(self.betas, t_batch, x.shape)
+                
+                if i < len(timesteps) - 1:
+                    pred_x0 = (x - torch.sqrt(1 - alpha_cumprod_t) * pred_noise) / torch.sqrt(alpha_cumprod_t)
+                    
+                    posterior_mean_coef1_t = extract(self.posterior_mean_coef1, t_batch, x.shape)
+                    posterior_mean_coef2_t = extract(self.posterior_mean_coef2, t_batch, x.shape)
+                    posterior_mean = posterior_mean_coef1_t * pred_x0 + posterior_mean_coef2_t * x
+                    posterior_variance_t = extract(self.posterior_variance, t_batch, x.shape)
+                    noise = torch.randn_like(x)
+                    x = posterior_mean + torch.sqrt(posterior_variance_t) * noise
+                else:
+                    x = (x - torch.sqrt(1 - alpha_cumprod_t) * pred_noise) / torch.sqrt(alpha_cumprod_t)
+            
+            # FREEZE t=0 after each denoising step
+            if freeze_t0:
+                # Reshape to [B, T, P, F] temporarily to set t=0
+                x_reshaped = x.reshape(B, P, F, T).permute(0, 3, 1, 2)  # [B, T, P, F]
+                
+                # Set x, y at t=0 for anchored players
+                x_reshaped[:, 0, :, 0] = torch.where(
+                    anchor_mask_batch,
+                    anchors_batch[:, :, 0],  # x
+                    x_reshaped[:, 0, :, 0]
+                )
+                x_reshaped[:, 0, :, 1] = torch.where(
+                    anchor_mask_batch,
+                    anchors_batch[:, :, 1],  # y
+                    x_reshaped[:, 0, :, 1]
+                )
+                if F > 2:
+                    x_reshaped[:, 0, :, 2] = torch.where(
+                        anchor_mask_batch,
+                        torch.zeros_like(x_reshaped[:, 0, :, 2]),  # speed = 0
+                        x_reshaped[:, 0, :, 2]
+                    )
+                
+                # Reshape back to [B, P*F, T]
+                x = x_reshaped.permute(0, 2, 3, 1).reshape(B, P * F, T)
+        
+        # Final reshape: [B, P*F, T] -> [B, T, P, F]
+        x = x.reshape(B, P, F, T).permute(0, 3, 1, 2).contiguous()
         
         return x
 

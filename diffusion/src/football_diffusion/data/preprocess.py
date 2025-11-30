@@ -10,6 +10,8 @@ from pathlib import Path
 from typing import Dict, List, Tuple, Optional
 import pickle
 from tqdm import tqdm
+from .formation_anchors import get_anchors, anchors_to_tensor, OFFENSE_ROLE_ORDER
+from .role_mapping import get_anchor_mask_for_offense
 
 
 def parse_game_clock(clock_str: str) -> float:
@@ -128,15 +130,29 @@ def extract_play_frames(
         start_frame = snap_frames['frameId'].min()
     
     # Find end frame
-    end_events = ['tackle', 'touchdown', 'out_of_bounds', 'fumble', 'pass_outcome']
-    end_frames = play_tracking[
-        play_tracking['event'].str.contains('|'.join(end_events), case=False, na=False)
+    # For passing plays, we want to stop when the route ends (pass caught/incomplete),
+    # NOT when the ball carrier is tackled or play ends
+    # Priority: pass_outcome events first (route ends), then other end events
+    pass_outcome_events = ['pass_outcome_caught', 'pass_outcome_incomplete', 'pass_arrived']
+    pass_outcome_frames = play_tracking[
+        play_tracking['event'].str.contains('|'.join(pass_outcome_events), case=False, na=False)
     ]
-    if len(end_frames) == 0:
-        # Use last frame if no end event
-        end_frame = play_tracking['frameId'].max()
+    
+    if len(pass_outcome_frames) > 0:
+        # For passing plays: stop when pass is caught/incomplete (route is done)
+        end_frame = pass_outcome_frames['frameId'].min()
     else:
-        end_frame = end_frames['frameId'].min()
+        # Fallback to other end events if no pass outcome found
+        # (for sacks, fumbles, etc.)
+        end_events = ['qb_sack', 'fumble', 'autoevent_passinterrupted']
+        end_frames = play_tracking[
+            play_tracking['event'].str.contains('|'.join(end_events), case=False, na=False)
+        ]
+        if len(end_frames) > 0:
+            end_frame = end_frames['frameId'].min()
+        else:
+            # Last resort: use last frame
+            end_frame = play_tracking['frameId'].max()
     
     # Extract frames in range
     play_tracking = play_tracking[
@@ -380,7 +396,16 @@ def build_context_vector(
     yardline_100 = compute_yardline_100(play_info.to_frame().T).iloc[0]
     yardline_norm = yardline_100 / 100.0  # Normalize to [0, 1]
     
-    continuous = np.array([yards_to_go_val, yardline_norm], dtype=np.float32)
+    # Hash mark encoding: LEFT = 0.0, MIDDLE = 0.5, RIGHT = 1.0
+    # Default to MIDDLE (will be overridden in preprocess_week with actual hash)
+    hash_mark_str = play_info.get('hash_mark', 'MIDDLE')
+    if isinstance(hash_mark_str, str):
+        hash_map = {'LEFT': 0.0, 'MIDDLE': 0.5, 'RIGHT': 1.0, 'left': 0.0, 'middle': 0.5, 'right': 1.0}
+        hash_encoded = hash_map.get(hash_mark_str.upper(), 0.5)
+    else:
+        hash_encoded = float(hash_mark_str) if not pd.isna(hash_mark_str) else 0.5
+    
+    continuous = np.array([yards_to_go_val, yardline_norm, hash_encoded], dtype=np.float32)
     
     return {
         'categorical': categorical,
@@ -443,7 +468,48 @@ def preprocess_week(
         game_id = play_info['gameId']
         play_id = play_info['playId']
         
-        # Extract frames
+        # FILTER: Skip rush plays (R) - we only want passing routes
+        # Also skip QB runs/scrambles if we want to focus on designed routes
+        if 'passResult' in play_info and play_info['passResult'] == 'R':
+            continue  # Skip rush plays
+        
+        # Get hash mark from original tracking data BEFORE extraction
+        # This ensures we have all columns available (club/team)
+        play_tracking_raw = tracking[
+            (tracking['gameId'] == game_id) &
+            (tracking['playId'] == play_id)
+        ].copy()
+        
+        hash_mark = "MIDDLE"  # Default
+        if len(play_tracking_raw) > 0:
+            # Find snap frame
+            snap_frames = play_tracking_raw[play_tracking_raw['event'].str.contains('snap', case=False, na=False)]
+            if len(snap_frames) > 0:
+                start_frame = snap_frames['frameId'].min()
+            else:
+                start_frame = play_tracking_raw['frameId'].min()
+            
+            snap_frame = play_tracking_raw[play_tracking_raw['frameId'] == start_frame]
+            
+            # Try both 'club' and 'team' columns (different datasets use different names)
+            ball_col = None
+            if 'club' in snap_frame.columns:
+                ball_col = 'club'
+            elif 'team' in snap_frame.columns:
+                ball_col = 'team'
+            
+            if ball_col is not None:
+                ball_snap_pos = snap_frame[snap_frame[ball_col] == 'football']
+                if len(ball_snap_pos) > 0:
+                    ball_y = ball_snap_pos['y'].iloc[0]
+                    if ball_y < 22.0:
+                        hash_mark = "LEFT"
+                    elif ball_y > 31.0:
+                        hash_mark = "RIGHT"
+                    else:
+                        hash_mark = "MIDDLE"
+        
+        # Extract frames (will stop at pass outcome, not at tackle)
         play_tracking = extract_play_frames(
             tracking, game_id, play_id, max_frames=max_frames
         )
@@ -470,8 +536,39 @@ def preprocess_week(
             # Truncate
             tensor = tensor[:max_frames]
         
-        # Build context
+        # Store hash_mark in play_info for build_context_vector
+        play_info = play_info.copy()
+        play_info['hash_mark'] = hash_mark
+        
+        # Build context (now includes hash_mark)
         context = build_context_vector(play_info)
+        
+        # Get yardline for anchors
+        yardline_100 = compute_yardline_100(play_info.to_frame().T).iloc[0]
+        
+        # Get formation and personnel for anchor computation
+        formation = str(play_info.get('offenseFormation', 'SHOTGUN'))
+        personnel = str(play_info.get('personnelO', '1 RB, 1 TE, 3 WR'))
+        
+        # Compute anchors using hash_mark detected above
+        anchors_dict = get_anchors(
+            formation=formation,
+            personnel=personnel,
+            yardline=yardline_100,
+            hash_mark=hash_mark,
+            direction="right"  # Already normalized/flipped
+        )
+        
+        # Convert anchors to tensor [P, 2] for offense players
+        anchors_t0 = np.zeros((num_players, 2), dtype=np.float32)
+        for i, role in enumerate(OFFENSE_ROLE_ORDER):
+            if i < num_players and role in anchors_dict:
+                x, y = anchors_dict[role]
+                anchors_t0[i, 0] = x
+                anchors_t0[i, 1] = y
+        
+        # Create anchor mask (offense players only)
+        anchor_mask = get_anchor_mask_for_offense(num_players)
         
         # Check if we have enough valid data (before padding)
         original_valid_frames = T_current if T_current <= max_frames else max_frames
@@ -486,7 +583,11 @@ def preprocess_week(
             'tensor': tensor,  # Now guaranteed to be [max_frames, P, F]
             'player_positions': player_positions,  # List of position strings [P]
             'context': context,
-            'frame_count': non_zero_frames
+            'frame_count': non_zero_frames,
+            'anchors_t0': anchors_t0,  # [P, 2] anchor positions for t=0
+            'anchor_mask': anchor_mask,  # [P] boolean mask for anchored players
+            'hash_mark': hash_mark,  # Hash position for this play
+            'yardline': yardline_100  # Yardline for this play
         })
     
     return processed_plays

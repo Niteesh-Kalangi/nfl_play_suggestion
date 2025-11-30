@@ -183,6 +183,10 @@ class FootballPlayDataset(Dataset):
         context_cat = play['context']['categorical']
         context_cont = play['context']['continuous']
         
+        # Get anchors and anchor mask
+        anchors_t0 = play.get('anchors_t0', np.zeros((self.P, 2), dtype=np.float32))
+        anchor_mask = play.get('anchor_mask', np.zeros(self.P, dtype=bool))
+        
         # Create mask (all frames are valid for now)
         # Could be improved to track actual frame counts
         mask = torch.ones(self.T, dtype=torch.float32)
@@ -190,8 +194,10 @@ class FootballPlayDataset(Dataset):
         return {
             'X': torch.FloatTensor(tensor),  # [T, P, F]
             'context_categorical': context_cat,
-            'context_continuous': torch.FloatTensor(context_cont),  # [2]
+            'context_continuous': torch.FloatTensor(context_cont),  # [2 or 3] - now includes hash_mark
             'mask': mask,
+            'anchors_t0': torch.FloatTensor(anchors_t0),  # [P, 2] anchor positions for t=0
+            'anchor_mask': torch.BoolTensor(anchor_mask),  # [P] boolean mask for anchored players
             'player_positions': play.get('player_positions', None),  # List of position labels [P]
             'gameId': int(play['gameId']),
             'playId': int(play['playId']),
