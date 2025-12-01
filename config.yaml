@@ -17,20 +17,20 @@ splits:
 trajectories:
   use_tracking: true
   fps: 10                    # Tracking data frame rate
-  max_timesteps: 50          # Truncate or pad sequences to this length
-  players: "offense_only"    # 'offense_only', 'defense_only', 'all', 'ball_carrier'
-  num_players: 11            # Number of players to track per play
-  include_velocity: true     # Include speed/acceleration features
+  max_timesteps: 60          # Truncate or pad sequences to this length (matches diffusion)
+  players: "all"             # Use all players (22 = 11 offense + 11 defense)
+  num_players: 22            # Number of players (22 = 11 offense + 11 defense, matches diffusion)
+  include_velocity: false    # Use 3 features (x, y, s) to match diffusion
   condition_on_state: true   # Condition on game state (down, distance, etc.)
 
 # Autoregressive model hyperparameters
 autoregressive:
   # Training settings
-  batch_size: 32
+  batch_size: 64            # Increased for faster training
   learning_rate: 0.001
   weight_decay: 0.0001
   epochs: 50
-  early_stopping_patience: 10
+  early_stopping_patience: 999  # Disabled - will train for all epochs
   scheduler: "cosine"        # 'cosine', 'step', 'none'
   
   # LSTM configuration
