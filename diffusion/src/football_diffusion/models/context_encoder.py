@@ -4,6 +4,7 @@ Context encoder for conditioning the diffusion model on game situation.
 import torch
 import torch.nn as nn
 from typing import Dict, List, Optional
+import hashlib
 
 
 class ContextEncoder(nn.Module):
@@ -106,9 +107,12 @@ class ContextEncoder(nn.Module):
                     for v in feat_values
                 ], dtype=torch.long)
             else:
-                # Hash-based encoding for other features (simplified)
+                # Deterministic hash-based encoding (sha1) to avoid Python hash randomization
+                def stable_hash(val, mod):
+                    h = hashlib.sha1(str(val).encode('utf-8')).digest()
+                    return int.from_bytes(h[:8], 'big') % mod
                 indices = torch.tensor([
-                    hash(str(v)) % embed_layer.num_embeddings
+                    stable_hash(v, embed_layer.num_embeddings)
                     for v in feat_values
                 ], dtype=torch.long)
             
@@ -160,4 +164,3 @@ def build_context_vocab(dataset) -> Dict[str, Dict]:
     # Implementation would iterate through dataset and collect unique values
     # For now, return empty dict (using hash-based encoding)
     return vocab
-

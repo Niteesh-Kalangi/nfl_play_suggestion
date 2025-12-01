@@ -660,7 +660,13 @@ if __name__ == '__main__':
     args = parser.parse_args()
     
     # Load config
-    config_path = Path(__file__).parent.parent / 'config' / args.config
+    # Allow absolute paths or existing relative paths; otherwise assume config/ under package
+    config_arg = Path(args.config)
+    if config_arg.is_absolute() or config_arg.exists():
+        config_path = config_arg
+    else:
+        config_path = Path(__file__).parent.parent / 'config' / args.config
+    
     with open(config_path) as f:
         config = yaml.safe_load(f)
     
@@ -669,4 +675,3 @@ if __name__ == '__main__':
     cache_dir = Path(args.cache_dir or data_config.get('cache_dir', '../../../data/cache'))
     
     preprocess_all(raw_dir, cache_dir, data_config)
-

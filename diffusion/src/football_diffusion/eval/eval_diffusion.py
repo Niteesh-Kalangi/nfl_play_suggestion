@@ -189,8 +189,13 @@ def run_evaluation(
     with open(config_path) as f:
         config = yaml.safe_load(f)
     
-    # Setup device
-    device = torch.device(device if torch.cuda.is_available() else 'cpu')
+    # Setup device with preference: mps -> cuda -> cpu
+    if device == 'mps' and torch.backends.mps.is_available():
+        device = torch.device('mps')
+    elif device.startswith('cuda') and torch.cuda.is_available():
+        device = torch.device(device)
+    else:
+        device = torch.device('cpu')
     print(f"Using device: {device}")
     
     # Load dataset
@@ -272,4 +277,3 @@ if __name__ == '__main__':
         ddim=args.ddim,
         device=args.device
     )
-

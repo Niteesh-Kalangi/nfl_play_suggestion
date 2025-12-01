@@ -13,6 +13,8 @@ def extract(a: torch.Tensor, t: torch.Tensor, x_shape: Tuple) -> torch.Tensor:
     
     Used for extracting beta, alpha, etc. at specific timesteps.
     """
+    # Ensure t is a 1D tensor; handle python/scalar/numpy inputs
+    t = torch.as_tensor(t, device=a.device).view(-1)
     batch_size = t.shape[0]
     # Ensure both tensors are on the same device (MPS compatibility)
     device = t.device
@@ -117,4 +119,3 @@ def q_posterior_mean_variance(
     )
     
     return posterior_mean, posterior_variance
-

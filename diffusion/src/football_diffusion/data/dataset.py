@@ -100,40 +100,16 @@ class FootballPlayDataset(Dataset):
         
         # Filter by split/weeks if specified
         if split is not None or weeks is not None:
-            import random
+            # Default deterministic week-based split: train 1-6, val 7, test 8
             if weeks is None:
-                # Use default splits by week - ALL 8 weeks for training
                 if split == 'train':
-                    # Use ALL 8 weeks for training (80% split)
-                    weeks = [1, 2, 3, 4, 5, 6, 7, 8]
-                    all_train_data = [d for d in self.data if d.get('week') in weeks]
-                    random.seed(42)  # For reproducibility
-                    random.shuffle(all_train_data)
-                    train_size = int(0.8 * len(all_train_data))
-                    self.data = all_train_data[:train_size]
-                    weeks = None  # Already filtered, don't filter again
+                    weeks = [1, 2, 3, 4, 5, 6]
                 elif split == 'val':
-                    # Use ALL 8 weeks, but take 20% as validation
-                    weeks = [1, 2, 3, 4, 5, 6, 7, 8]
-                    all_train_data = [d for d in self.data if d.get('week') in weeks]
-                    random.seed(42)  # Same seed for reproducibility
-                    random.shuffle(all_train_data)
-                    train_size = int(0.8 * len(all_train_data))
-                    self.data = all_train_data[train_size:]  # Last 20% for val
-                    weeks = None  # Already filtered, don't filter again
+                    weeks = [7]
                 elif split == 'test':
-                    # For test, we can use a small subset or reuse val split
-                    # Using 10% of all weeks for final test
-                    weeks = [1, 2, 3, 4, 5, 6, 7, 8]
-                    all_test_data = [d for d in self.data if d.get('week') in weeks]
-                    random.seed(999)  # Different seed for test
-                    random.shuffle(all_test_data)
-                    test_size = int(0.1 * len(all_test_data))
-                    self.data = all_test_data[:test_size]  # First 10% for test
-                    weeks = None
+                    weeks = [8]
                 else:
                     weeks = None
-            
             if weeks:
                 # Filter by week
                 self.data = [d for d in self.data if d.get('week') in weeks]
@@ -183,9 +159,11 @@ class FootballPlayDataset(Dataset):
         context_cat = play['context']['categorical']
         context_cont = play['context']['continuous']
         
-        # Create mask (all frames are valid for now)
-        # Could be improved to track actual frame counts
-        mask = torch.ones(self.T, dtype=torch.float32)
+        # Create mask based on frame_count if available
+        frame_count = int(play.get('frame_count', self.T))
+        frame_count = max(1, min(frame_count, self.T))
+        mask = torch.zeros(self.T, dtype=torch.float32)
+        mask[:frame_count] = 1.0
         
         return {
             'X': torch.FloatTensor(tensor),  # [T, P, F]
@@ -221,4 +199,3 @@ def collate_fn(batch: list) -> Dict[str, torch.Tensor]:
         'playIds': [item['playId'] for item in batch],
         'weeks': [item['week'] for item in batch]
     }
-

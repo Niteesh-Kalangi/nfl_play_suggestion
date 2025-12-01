@@ -173,7 +173,8 @@ class FootballDiffusion(nn.Module):
         context_continuous: torch.Tensor,
         num_steps: int = 50,
         ddim: bool = False,
-        eta: float = 0.0
+        eta: float = 0.0,
+        smooth: bool = True
     ) -> torch.Tensor:
         """
         Sample from the diffusion model.
@@ -266,7 +267,14 @@ class FootballDiffusion(nn.Module):
         
         # Reshape: [B, P*F, T] -> [B, T, P, F]
         # Use same reshape method as training for consistency
+        # Optional light temporal smoothing to reduce jitter in generated plays
+        if smooth:
+            kernel = torch.tensor([0.25, 0.5, 0.25], device=x.device, dtype=x.dtype).view(1, 1, 3)
+            x = torch.nn.functional.pad(x, (1, 1), mode='replicate')
+            kernel = kernel.expand(x.shape[1], -1, -1)  # [C,1,3]
+            x = torch.nn.functional.conv1d(x, kernel, groups=x.shape[1])
+        # Clamp to a reasonable normalized range to avoid extreme outliers
+        x = torch.clamp(x, -4.0, 4.0)
         x = x.reshape(B, P, F, T).permute(0, 3, 1, 2).contiguous()  # [B, T, P, F]
         
         return x
-
