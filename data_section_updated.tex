@@ -1,0 +1,78 @@
+\section{Data}
+
+\subsection{Dataset Overview}
+
+We use the \textbf{NFL Big Data Bowl 2023} tracking dataset, which provides
+10 Hz player trajectories (positions $x, y$, speed $s$) for all players on the field,
+along with play metadata (down, distance, yardline, formation, personnel, defensive team) 
+and game context (clock, score differential, quarter). Data spans 8 weeks of regular-season games 
+(\texttt{week1.csv}--\texttt{week8.csv}).
+
+\subsection{Size and Modalities}
+
+After filtering to pass plays only (see Section~\ref{sec:filtering}), the dataset contains 
+$\sim$8{,}100 plays. Plays are fixed-length sequences of 60 frames (6 seconds at 10 Hz).  
+The diffusion model uses all 22 players (11 offense, 11 defense), with fixed player ordering:
+offense sorted as QB, RB, WR, TE, OL; defense sorted as DL, LB, DB.
+
+Trajectory features per player: $(x, y, s)$ (3 features), 
+yielding a 66-dimensional state vector for 22 players (66D).
+
+Context conditioning includes five categorical variables 
+(down, offensive formation, personnel grouping, defensive team, situation category) 
+and three continuous variables (yards-to-go, normalized yardline, hash mark position).
+
+\subsection{Splits and Filtering}
+\label{sec:filtering}
+
+We use a random 80/20 split of 90\% of all 8 weeks for train/validation, 
+with the remaining 10\% held out for testing 
+($\sim$5{,}800 train / $\sim$1{,}500 val / $\sim$800 test plays).
+
+Filtering criteria:
+\begin{itemize}
+    \item \textbf{Pass plays only}: Rush plays (\texttt{passResult == 'R'}) are excluded 
+          to focus the model on route generation rather than designed runs.
+    \item \textbf{Sequence truncation}: Plays are truncated at \texttt{pass\_outcome\_caught} 
+          or \texttt{pass\_outcome\_incomplete} events, capturing only the route phase 
+          (before ball is caught or incomplete).
+    \item \textbf{Player requirements}: Each play must have exactly 22 tracked players 
+          (11 offense, 11 defense).
+    \item \textbf{Minimum valid frames}: Plays with fewer than 50\% valid (non-padded) frames 
+          are excluded.
+\end{itemize}
+
+\subsection{Normalization and Preprocessing}
+
+All plays are standardized so offense always moves left-to-right by flipping coordinates 
+when \texttt{playDirection == 'left'} and rotating angles accordingly; 
+this removes directional asymmetry while preserving field geometry.
+
+Both autoregressive and diffusion models use \textbf{z-score normalization} per feature:
+each coordinate and speed value is standardized to mean~0, standard deviation~1.
+Normalization statistics are computed across all plays and stored for denormalization 
+during inference.
+
+Sequences are padded or truncated to fixed length $T = 60$ frames with zero-padding 
+for shorter plays. Fixed player ordering ensures consistent role assignments across plays.
+
+\subsection{Formation Anchoring}
+
+For the diffusion model, we compute \textbf{formation anchors}---initial player positions 
+at $t=0$ based on the offensive formation, personnel grouping, yardline, and hash mark.
+These anchors are derived from formation templates (e.g., SHOTGUN, SINGLEBACK, I\_FORM, 
+EMPTY, TRIPS, BUNCH, 12\_PERSONNEL) and locked during sampling to ensure realistic 
+starting formations. The anchor loss in training penalizes deviations from these 
+predefined positions at the initial timestep.
+
+\subsection{Biases and Limitations}
+
+The dataset is imbalanced toward 1st down situations and common formations (shotgun predominates).
+Filtering to pass plays removes all rushing attempts, limiting applicability to run-heavy scenarios.
+Fixed-length sequences (60 frames) truncate longer plays and pad shorter ones, 
+potentially losing late-stage dynamics or introducing artificial static periods.
+Formation templates cover common but not all possible formations, 
+and the fixed player ordering may not perfectly match all personnel groupings.
+Evaluation focuses on offense trajectory quality; 
+defensive movement serves as context but is not explicitly evaluated for realism.
+
