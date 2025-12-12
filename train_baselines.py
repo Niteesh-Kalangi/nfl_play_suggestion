@@ -1,5 +1,13 @@
 """
-Main script to train all baseline models.
+Main script to train auxiliary play suggestion models.
+
+NOTE: These are NON-GENERATIVE models for play-level decision quality.
+For trajectory generation baselines, use train_autoregressive.py instead.
+
+Models trained here:
+- kNN Policy (state-based similarity search)
+- Bucket Policy (interpretable lookup table)
+- Linear Models (Ridge/Logistic regression)
 """
 import sys
 import numpy as np

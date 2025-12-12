@@ -1,81 +1,218 @@
-# NFL Play Suggestion Baseline Models
+# NFL Player Trajectory Generation
 
-Baseline models for suggesting NFL plays based on game situation (down, distance, field position, etc.) using historical play data from the NFL Big Data Bowl 2023.
+This project implements **autoregressive trajectory generators (LSTM + Transformer)** for NFL player movement prediction, serving as the primary baselines for comparing against diffusion-based models. It also includes auxiliary play suggestion models for game-level decision making.
 
 ## Overview
 
-This project implements three progressively stronger baseline models for play suggestion:
+The project has two main components:
 
-1. **State-only kNN** - Finds similar historical situations and suggests the best exemplar play
-2. **Bucketed Frequency Policy** - Interpretable lookup table by situation buckets
-3. **Light Linear Models** - Ridge regression for yards, Logistic regression for success
+### 1. Autoregressive Trajectory Baselines (Primary)
 
-All models share a clean data pipeline and can be extended to Baseline 1.5 (State + Pre-snap Shape kNN).
+For the player trajectory generation task, the main baselines are:
+
+- **LSTM-based autoregressive trajectory generator** - Uses recurrent architecture for sequential prediction
+- **Transformer-based autoregressive trajectory generator** - Uses attention mechanism with causal masking
+
+These are used as the **primary comparison points** for the diffusion model in the NeurIPS-style report.
+
+### 2. Play Suggestion Auxiliary Models
+
+Auxiliary, non-generative models for play-level decisions:
+
+- **State-only kNN** - Finds similar historical situations and suggests the best exemplar play
+- **Bucketed Frequency Policy** - Interpretable lookup table by situation buckets
+- **Light Linear Models** - Ridge regression for yards, Logistic regression for success
+
+> **Note:** These auxiliary models are for play-level decision quality, not for trajectory generation.
 
 ## Setup
 
 ### 1. Create Conda Environment
 
 ```bash
-conda create -n nfl_baselines python=3.9
-conda activate nfl_baselines
-pip install pandas numpy scikit-learn scipy pyyaml joblib
+conda create -n nfl_trajectory python=3.9
+conda activate nfl_trajectory
+pip install pandas numpy scikit-learn scipy pyyaml joblib torch tqdm tabulate
 ```
 
 ### 2. Download Data
 
-Place the NFL Big Data Bowl 2023 data files in the `data/` directory. See `data/README.md` for details on where to download the dataset.
+Place the NFL Big Data Bowl 2023 data files in the `data/` directory. See `data/README.md` for details.
 
-### 3. Train Models
+### 3. Train Autoregressive Models
 
 ```bash
-python train_baselines.py
+# Train both LSTM and Transformer
+python train_autoregressive.py --model all
+
+# Or train individually
+python train_autoregressive.py --model lstm
+python train_autoregressive.py --model transformer
+```
+
+### 4. Evaluate Trajectory Models
+
+```bash
+# Evaluate all models on test set
+python eval_trajectories.py --models all --split test
+
+# Evaluate specific model
+python eval_trajectories.py --models lstm transformer --split test
 ```
 
 ## Project Structure
 
 ```
-dl_project/
-├── data/                    # Raw CSV files
+nfl_play_suggestion/
+├── data/                    # Raw CSV files (NFL Big Data Bowl 2023)
 │   ├── plays.csv
 │   ├── games.csv
 │   ├── players.csv
-│   └── week*.csv           # Tracking data
+│   └── week*.csv            # Tracking data
 ├── src/
-│   ├── data_io.py          # Data loading
+│   ├── trajectory_data.py   # Trajectory dataset building
+│   ├── models/              # Trajectory generation models
+│   │   ├── base_autoregressive.py     # Abstract base class
+│   │   ├── autoregressive_lstm.py     # LSTM generator
+│   │   └── autoregressive_transformer.py  # Transformer generator
+│   ├── data_io.py           # Data loading
 │   ├── preprocess.py        # Standardization and joining
 │   ├── rewards.py           # Label computation
 │   ├── features.py          # Feature engineering
 │   ├── splits.py            # Train/val/test splitting
-│   ├── baselines/
-│   │   ├── knn_policy.py    # kNN baseline
-│   │   ├── bucket_policy.py # Bucket policy
-│   │   └── linear_heads.py  # Linear models
-│   ├── eval.py              # Evaluation metrics
-│   └── api.py               # Inference API
-├── notebooks/
-│   └── 00_explore.ipynb     # Data exploration
+│   ├── baselines/           # Auxiliary play suggestion models
+│   │   ├── knn_policy.py
+│   │   ├── bucket_policy.py
+│   │   └── linear_heads.py
+│   ├── eval.py              # Evaluation metrics (ADE, FDE, etc.)
+│   └── api.py               # Inference APIs
+├── train_autoregressive.py  # Train LSTM/Transformer baselines
+├── eval_trajectories.py     # Evaluate trajectory models
+├── train_baselines.py       # Train auxiliary play suggestion models
 ├── config.yaml              # Configuration
-└── train_baselines.py       # Main training script
+└── artifacts/
+    └── autoregressive/      # Saved model checkpoints
+        ├── lstm.pt
+        └── transformer.pt
 ```
 
-## Quick Start
+## Autoregressive Trajectory Baselines
 
-### 1. Train All Baselines
+### LSTM Trajectory Generator
+
+```python
+from src.api import TrajectoryBaselines
+
+# Load trained models
+baselines = TrajectoryBaselines.load('artifacts/autoregressive')
+
+# Generate trajectory for a game situation
+context = {
+    'down': 2,
+    'yardsToGo': 7,
+    'yardline_100': 45,
+    'clock_seconds': 300,
+    'score_diff': -3,
+    'quarter': 3
+}
+
+# Generate 50-frame trajectory using LSTM
+trajectory = baselines.generate_with_lstm(context, horizon=50)
+print(f"Trajectory shape: {trajectory.shape}")  # [1, 50, output_dim]
+```
+
+### Transformer Trajectory Generator
+
+```python
+# Generate using Transformer
+trajectory = baselines.generate_with_transformer(context, horizon=50)
+
+# Or use the unified interface
+trajectory = baselines.generate(context, horizon=50, model='transformer')
+```
+
+### Model Architecture
+
+**LSTM Generator:**
+- Input projection layer
+- Multi-layer LSTM with hidden_dim=256
+- Output projection to player positions
+- Teacher forcing during training, autoregressive rollout during inference
+
+**Transformer Generator:**
+- Input projection with positional encoding
+- Causal-masked Transformer decoder (4 layers, 8 heads)
+- Learned memory for task-specific context
+- Output projection to player positions
+
+## Evaluation Metrics
+
+For trajectory generation, we use:
+
+| Metric | Description |
+|--------|-------------|
+| **ADE** | Average Displacement Error - mean L2 distance across all timesteps |
+| **FDE** | Final Displacement Error - L2 distance at the last timestep |
+| **Collision Rate** | Fraction of timesteps with player collisions |
+| **Speed Distribution** | Wasserstein distance between predicted and real speed distributions |
+
+### Running Evaluation
+
+```bash
+python eval_trajectories.py --models lstm transformer --split test
+```
+
+Output:
+```
++-------------+--------+--------+------------------+-------------+
+| Model       | ADE    | FDE    | Collision Rate   | Speed Dist  |
++=============+========+========+==================+=============+
+| LSTM        | X.XXXX | X.XXXX | X.XXXX           | X.XXXX      |
+| TRANSFORMER | X.XXXX | X.XXXX | X.XXXX           | X.XXXX      |
++-------------+--------+--------+------------------+-------------+
+```
+
+## Configuration
+
+Edit `config.yaml` to adjust:
+
+```yaml
+# Trajectory generation settings
+trajectories:
+  max_timesteps: 50
+  players: "offense_only"
+  num_players: 11
+  include_velocity: true
+  condition_on_state: true
+
+# Autoregressive model hyperparameters
+autoregressive:
+  batch_size: 32
+  learning_rate: 0.001
+  epochs: 50
+  
+  lstm:
+    hidden_dim: 256
+    num_layers: 2
+    dropout: 0.1
+  
+  transformer:
+    d_model: 256
+    nhead: 8
+    num_layers: 4
+```
+
+## Auxiliary Play Suggestion Models
+
+> These are **non-generative** models for play-level decision quality, kept for completeness.
+
+### Train Auxiliary Models
 
 ```bash
 python train_baselines.py
 ```
 
-This will:
-- Load and preprocess the data
-- Build state features
-- Split into train/val/test
-- Fit all three baseline models
-- Evaluate on validation set
-- Save artifacts
-
-### 2. Use the API
+### Use Auxiliary Models
 
 ```python
 from src.api import BaselineSuite
@@ -94,77 +231,27 @@ situation = {
 }
 
 result = suite.suggest_play(situation, mode='knn')
-print(f"Suggested play: {result['suggestion']}")
 print(f"Expected yards: {result['expected_yards']:.2f}")
 print(f"Success probability: {result['success_prob']:.3f}")
 ```
 
-## Baseline Models
+## Paper/Report Notes
 
-### Baseline 1: State-only kNN
+For the NeurIPS-style writeup:
 
-Finds the k nearest neighbors in situation space and:
-- Predicts yards from mean of neighbors
-- Suggests the exemplar play (neighbor with highest yards)
-
-**Hyperparameters:**
-- `k=50` (number of neighbors)
-- `metric='euclidean'`
-- Optionally weight `yardsToGo` and `yardline_100` higher
-
-### Baseline 2: Bucketed Frequency Policy
-
-Interpretable lookup table that buckets situations by:
-- Down (1-4)
-- Yards to go bins (1-2, 3-5, 6-9, 10-15, 16+)
-- Yardline bins (Own 1-20, 21-50, 51-80, Red Zone)
-- Clock bins (>600s, 600-120s, ≤120s)
-
-Returns the historically best play for each bucket.
-
-### Baseline 3: Light Linear Models
-
-- **Ridge Regression** for yards prediction (α=1.0)
-- **Logistic Regression** for success classification (C=1.0, class_weight='balanced')
-
-Provides calibrated probabilities and ranking baselines.
-
-## Evaluation Metrics
-
-- **Yards prediction:** MAE, RMSE, R², Spearman correlation
-- **Success classification:** Brier score, AUC, Accuracy
-- **Policy quality:** Top-K Precision
-- **Counterfactual Policy Eval:** Self-Normalized IPS, Doubly-Robust
+> **Baselines Section:**
+> "Our primary baselines are autoregressive trajectory generators implemented with LSTM and Transformer architectures. These models predict player positions autoregressively, conditioned on game state. kNN, bucket, and linear models are only used as auxiliary, non-generative baselines for play-level decision quality, not for trajectory generation."
 
 ## Data Processing
 
-The pipeline:
+The trajectory pipeline:
 
-1. **Load raw CSVs** → `data_io.load_raw()`
-2. **Filter normal plays** → Drop penalties, kneel-downs, spikes
-3. **Standardize coordinates** → Always offense left→right
-4. **Join game context** → Add week, score differential, clock
-5. **Compute rewards** → Yards gained, success, TD indicators
-6. **Build features** → State features (+ optional pre-snap shape)
-7. **Split by week** → Train on weeks 1-6, val on 7-8, test on 8
-
-## Configuration
-
-Edit `config.yaml` to adjust:
-- Train/val/test splits
-- Feature settings (including pre-snap shape)
-- Model hyperparameters
-- Evaluation options
-
-## Next Steps
-
-- Add Baseline 1.5 (State + Pre-snap Shape kNN)
-- Integrate play type classification (pass/run)
-- Add EPA (Expected Points Added) as reward
-- Visualize suggested plays using tracking data
-- Build Streamlit demo interface
+1. **Load tracking CSVs** → Merge with plays and games
+2. **Standardize coordinates** → Always offense left→right
+3. **Extract player positions** → Filter by offense/defense
+4. **Build sequences** → [T, num_players * features_per_player]
+5. **Split by week** → Train on weeks 1-6, val on 7, test on 8
 
 ## License
 
 Data from NFL Big Data Bowl 2023.
-
