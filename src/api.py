@@ -325,8 +325,8 @@ class TrajectoryBaselines:
         Returns:
             TrajectoryBaselines instance
         """
-        from src.models.autoregressive_lstm import LSTMTrajectoryGenerator
-        from src.models.autoregressive_transformer import TransformerTrajectoryGenerator
+        from autoreg.models.autoregressive_lstm import LSTMTrajectoryGenerator
+        from autoreg.models.autoregressive_transformer import TransformerTrajectoryGenerator
         
         checkpoint_dir = Path(checkpoint_dir)
         

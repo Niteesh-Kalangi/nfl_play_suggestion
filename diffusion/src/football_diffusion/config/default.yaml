@@ -1,0 +1,55 @@
+# Default configuration for Football Diffusion model
+
+data:
+  raw_dir: "../../../data/nfl-big-data-bowl-2023"
+  cache_dir: "../../../data/cache"
+  frames: 60
+  features: [x, y, s]
+  flip_to_right: true
+  min_players: 22
+  train_games_pct: 0.7
+  val_games_pct: 0.15
+  test_games_pct: 0.15
+
+conditioning:
+  cat: [down, offensiveFormation, personnelO, defTeam, situation]
+  cont: [yardsToGo, yardlineNorm, hash_mark]  # hash_mark: 0.0=LEFT, 0.5=MIDDLE, 1.0=RIGHT
+  drop_prob: 0.1  # Classifier-free guidance dropout probability
+
+diffusion:
+  beta_schedule: cosine
+  steps: 1000
+  sample_steps: 50
+  guidance_scale: 2.0
+  model:
+    channels: 256
+    temporal_kernel: 3
+    depth: 4
+    player_heads: 4
+
+train:
+  optimizer: adamw
+  lr: 2e-4  # Increased from 1e-4: better for route-focused data and anchor loss learning
+  wd: 1e-2
+  batch_size: 32
+  max_epochs: 50
+  grad_clip: 1.0
+  accumulate_grad_batches: 1
+  val_check_interval: 0.5
+
+loss:
+  lambda_anchor: 1.0  # Weight for anchor loss at t=0
+  lambda_smooth: 0.5  # Weight for velocity smoothness loss (increased for smoother trajectories)
+  lambda_bounds: 0.1  # Weight for boundary penalty (disabled for normalized data)
+
+generation:
+  freeze_t0: true  # Lock t=0 to formation anchors during sampling
+  anchor_delta: 0.25  # Huber loss delta for anchor loss (yards tolerance)
+  hash_default: MIDDLE  # Default hash mark if not provided (LEFT, MIDDLE, RIGHT)
+
+eval:
+  n_samples_per_context: 8
+  speed_cap: 12.0
+  field_bounds: [0, 120, 0, 53.3]
+  sample_steps: [20, 50, 100]
+

@@ -1,0 +1,6 @@
+# Evaluation-specific configuration overrides
+# Extends default.yaml
+
+eval:
+  n_samples_per_context: 8
+  sample_steps: [20, 50, 100]
